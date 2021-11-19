@@ -1,0 +1,25 @@
+exti9_5_isr():
+        ;msx_Y_scan = (gpio_port_read(Y0_port) & Y_MASK) >> 5;
+        ldr     r0, .LCPI0_0;Y0_port
+        ldrh    r0, [r0]
+        and     r0, r0, #480;Y_MASK
+        lsr     r0, r0, #5; now r0 is working as msx_Y_scan
+        ;GPIOB_BSRR = x_bits[msx_Y_scan]; //Atomic GPIOB update => Release and press MSX keys for this column. This ends time criticity.
+        ldr     r1, .LCPI0_2;x_bits
+        ldr     r0, [r1, r0, lsl #2]
+        ldr     r1, .LCPI0_3;GPIOB_BSRR
+        str     r0, [r1]
+        bx      lr
+.LCPI0_0:
+        .long   40020000                        @ 0x262a820
+.LCPI0_1:
+        .long   msx_Y_scan
+.LCPI0_2:
+        .long   x_bits
+.LCPI0_3:
+        .long   40000000                        @ 0x2625a00
+msx_Y_scan:
+        .short  0                               @ 0x0
+
+x_bits:
+        .zero   64

@@ -1,0 +1,19 @@
+{
+	"folders": [
+		{
+			"path": "."
+		}
+	],
+	"settings": {
+		"cortex-debug.armToolchainPath": ".",
+		"files.associations": {
+			"rcc.h": "c",
+			"stdbool.h": "c",
+			"usart.h": "c",
+			"stdio.h": "c",
+			"flash_intelhexf4.h": "c",
+			"unistd.h": "c"
+		},
+		"cortex-debug.openocdPath": "openocd"
+	}
+}
