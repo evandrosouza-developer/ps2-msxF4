@@ -91,5 +91,5 @@ The structure of the Database is:
 	(Bit 2:0) MSX X, ie, which bit will carry the key, to be read by PPI 8255 PB7:0.
 	
 
-Use a ST-Link v2 Programmer (or similar) to flash the program using `make flash` onto the STM32.
+Although the serial connection is the standard, I didn't test upload the firmware using Boot0. Use a ST-Link v2 Programmer, Black Magic Probe (or similar) to flash the program using `make flash` onto the STM32.
 
