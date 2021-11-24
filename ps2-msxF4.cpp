@@ -172,7 +172,7 @@ int main(void)
 	/*********************************************************************************************/
 	/************************************** Main Loop ********************************************/
 	/*********************************************************************************************/
-	uint32_t* ptr_scancode = (uint32_t*)&scancode[0];
+	uint32_t* ptr_scancode = (uint32_t*)&scancode[0];	//To consider scancode[0]..[3] as a (uint32_t*)
 	for(;;)
 	{
 		//The first functionality running in the main loop
@@ -220,7 +220,7 @@ int main(void)
 		}
 
 		//Keep RX serial buffer empty and echoes to output
-		if(serial_available_get_char())
+		while(serial_available_get_char())
 		{
 			uint8_t ch = serial_get_char();
 			serial_put_char(ch);

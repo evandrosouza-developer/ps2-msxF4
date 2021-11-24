@@ -46,6 +46,7 @@ volatile uint8_t command, argument;
 volatile uint32_t prev_systicks;
 extern uint32_t systicks;													//Declared on msxhid.cpp
 extern uint64_t acctimeps2data0;									//Declared on hr_timer_delay.c
+extern  uint32_t formerscancode;									//declared on msxmap.cpp
 extern uint8_t scancode[4];												//declared on msxmap.cpp
 extern uint64_t time_between_ps2clk;							//Declared on hr_timer_delay.c
 extern uint16_t fail_count;												//declared on msxhid.cpp
@@ -99,7 +100,7 @@ void power_on_ps2_keyboard()
 	gpio_port_config_lock(PS2_CLOCK_PIN_PORT, PS2_CLOCK_PIN_ID);
 
 	// PS/2 keyboard Data pin
-		gpio_set(PS2_DATA_PIN_PORT, PS2_DATA_PIN_ID);		//Hi-Z
+	gpio_set(PS2_DATA_PIN_PORT, PS2_DATA_PIN_ID);		//Hi-Z
 	gpio_mode_setup(PS2_DATA_PIN_PORT, GPIO_MODE_OUTPUT, GPIO_PUPD_PULLUP, PS2_DATA_PIN_ID);
 	gpio_set_output_options(PS2_DATA_PIN_PORT, GPIO_OTYPE_OD, GPIO_OSPEED_25MHZ, PS2_DATA_PIN_ID);
 	gpio_port_config_lock(PS2_DATA_PIN_PORT, PS2_DATA_PIN_ID);
@@ -128,6 +129,7 @@ void power_off_ps2_keyboard()
 // Initialize receive ringbuffer
 void init_ps2_recv_buffer()
 {
+	formerscancode = 0;
 	ps2_recv_buff_put=0;
 	ps2_recv_buff_get=0;
 	for(uint8_t i=0; i<PS2_RECV_BUFFER_SIZE; ++i)
@@ -166,8 +168,15 @@ uint8_t get_ps2_byte(volatile uint8_t *buff)
 bool ps2_keyb_detect(void)
 {
 	uint32_t systicks_start_command;	//Initial time mark
-	uint8_t mountstring[16];					//Used in usart_send_string()
+	uint8_t mountstring[16], ch;			//Used in usart_send_string()
 	
+	wait_tx_ends();
+
+	//Clean RX serial buffer to not false glitch database_setup
+	while (serial_available_get_char())
+		ch = serial_get_char();
+	ch&= 0xFF;	//only to avoid unused warning.
+
 	//Wait for 2.5s to keyboard execute its own power on and BAT (Basic Assurance Test) procedure
 	systicks_start_command = systicks;
 	ps2_keyb_detected = false;
@@ -799,7 +808,7 @@ bool mount_scancode()
 			}	//case 0:
 			case 1:
 			{
-				if (ps2_keystr_e0 == true)
+				if (ps2_keystr_e0)
 				{
 					if(ps2_byte_received != 0xF0)
 					{
@@ -812,14 +821,14 @@ bool mount_scancode()
 							mount_scancode_OK = true;
 							reset_mount_scancode_machine();
 							return true;
-						}
+						}	//if(ps2_byte_received != 0x12)
 						else
 						{
 							//Discard E0 12 here
 							reset_mount_scancode_machine();
 							break;
-						}
-					}
+						}	//if(ps2_byte_received != 0x12)
+					}	//if(ps2_byte_received != 0xF0)
 					else //if(ps2_byte_received == 0xF0)
 					{
 							//3 bytes, but I'm reading the second one (E0 F0)
@@ -827,11 +836,13 @@ bool mount_scancode()
 							scancode[0] = 2;
 							mount_scancode_count_status = 2; //points to next case
 							break;
-					}
+					}	//if(ps2_byte_received == 0xF0)
 				}
 				if (ps2_keystr_e1)  //Break key (8 bytes)
 				{
-					//8 bytes (0xE1 + 7 bytes). Ler apenas os 3 iniciais e desconsiderar os demais. Estou lendo o segundo byte
+					//8 bytes: Dois grupos de 3 e em de 2 bytes: (E1, 14, 77; E1, F0, 14; F0, 77).
+					//O grupo F0, 77 é lido como break code do Num Lock: Inofensivo.
+					//Ler apenas os 3 iniciais e desconsiderar os demais. Estou lendo o segundo byte
 					scancode[2] = ps2_byte_received;
 					scancode[0] = 2;
 					mount_scancode_count_status = 2; //points to next case
@@ -854,13 +865,13 @@ bool mount_scancode()
 			case 2:
 			//Está lendo o terceiro byte do ps2_byte_received
 			{
-				if (ps2_keystr_e0 == true)
+				if (ps2_keystr_e0 || ps2_keystr_e1)
 				{
 					//São 3 bytes, e estou lendo o terceiro byte, logo, terminou.
 					// Exception is the PrintScreen break: It will be returned as one 3 bytes ps2_byte_received releases:
-					// E0 F0 7C (and E0 F0 12 is dicarded), but this key is not present on MSX.
+					// E0 F0 7C (plus E0 F0 12 and E0 F0 7E are dicarded), but this key is not present on MSX.
 					// If you want to map this key, fix it in excel file and click on the black keyboard to rerun macro
-					if(ps2_byte_received != 0x12)
+					if( (ps2_byte_received != 0x12) )
 					{
 						scancode[3] = ps2_byte_received;
 						scancode[0] = 3;
@@ -876,18 +887,9 @@ bool mount_scancode()
 						break;
 					}
 				}
-				else if (ps2_keystr_e1 == true)  //Break key (8 bytes)
-				{
-					//São 8 bytes (0xE1 + 7 bytes). Ler apenas os 3 iniciais e desprezar os demais.
-					//Estou lendo o terceiro byte.
-					scancode[3] = ps2_byte_received;
-					scancode[0] = 3;
-					mount_scancode_count_status = 3; //points to next case
-					break;
-				}  	
  				break;	//case syntax suggested
 			}	//case 2:
-			//Está lendo o quarto byte do ps2_byte_received Pause/Break
+			/*//Está lendo o quarto byte do ps2_byte_received Pause/Break
 			case 3:
 			{
 				if (ps2_keystr_e1 == true)  //Break key (8 bytes)
@@ -944,7 +946,7 @@ bool mount_scancode()
 				mount_scancode_OK = true;
 				reset_mount_scancode_machine();
 				return true;
-			}
+			}*/
 			default:
 				break;
 			}	//switch (mount_scancode_count_status)

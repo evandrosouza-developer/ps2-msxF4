@@ -79,7 +79,9 @@ void sys_tick_handler(void) // f=30Hz (Each 33,33ms)
 	if (ps2_keyb_detected == true)
 	{
 		//Queue keys processing:
-		ticks_keys = (ticks_keys++ & (MAX_TICKS_KEYS - 1));
+		ticks_keys++;
+		if(ticks_keys > MAX_TICKS_KEYS)
+			ticks_keys = 0;
 		if (!ticks_keys)
 		{
 			msxmap objeto;
@@ -89,10 +91,12 @@ void sys_tick_handler(void) // f=30Hz (Each 33,33ms)
 			caps_state = gpio_get(CAPSLOCK_port, CAPSLOCK_pin_id);
 			kana_state = gpio_get(KANA_port, KANA_pin_id);
 			if ( (caps_state != caps_former) || (kana_state != kana_former) )
+			{
 				update_ps2_leds = true;
-			caps_former = caps_state;
-			kana_former = kana_state;
-		}
+				caps_former = caps_state;
+				kana_former = kana_state;
+			}	//if ( (caps_state != caps_former) || (kana_state != kana_former) )
+		}	//if (!ticks_keys)
 	}
 
 	if(fail_count!=last_ps2_fails)

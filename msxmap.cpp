@@ -12,12 +12,21 @@
 
 //Use Tab width=2
 
-#define MAX_LINHAS_VARRIDAS								320	//To acommodate maximum size of 3K (3072 lines of 10 bytes each - header included)
+#define MAX_LINHAS_VARRIDAS								320	//To acommodate maximum size of 3200 (320 lines of 10 bytes each - header included)
 #define MAX_TIME_OF_IDLE_KEYSCAN_SYSTICKS	5		//30 / 5 = 6 times per second is the maximum sweep speed
 #define	Y_SHIFT														6		//Shift colunm
-
-#define PRESS_RELEASE_BIT_POSITION				3
-#define PRESS_RELEASE_BIT									1 << PRESS_RELEASE_BIT_POSITION //8
+#define	X_SHIFT														0		//Shift line
+#define	NIBBLE														4
+#define	CASE0_KEY0												4
+#define	CASE0_KEY1												5
+#define	CASE1_KEY0												6
+#define	CASE1_KEY1												7
+#define	CASE2_KEY0												8
+#define	CASE2_KEY1												9
+#define X_POLARITY_BIT_POSITION						3
+#define X_POLARITY_BIT_MASK								(1 << X_POLARITY_BIT_POSITION) //8
+#define	Y_LOCAL_MASK											0xF0//Mask of Y on press/release command byte
+#define	X_LOCAL_MASK											7		//Mask of X on press/release command byte
 
 //Variáveis globais: Visíveis por todo o contexto do programa
 uint8_t* base_of_database;
@@ -34,7 +43,7 @@ uint32_t x_bits[ 16 ]; //All pins that interface with PORT B of 8255 must have h
 
 uint8_t y_dummy;															//Read from MSX Database to sinalize "No keys mapping"
 volatile uint32_t formerscancode;
-volatile uint8_t scancode[4];									//O 1º é a quantidade de bytes;
+volatile uint8_t scancode[4];									//scancode[0] stores the quantity of bytes;
 
 uint8_t CtrlAltDel;
 //First record of unused V.1.0 Database
@@ -53,10 +62,6 @@ const uint8_t Y_XLAT_TABLE[uint8_t(16)] = { 0b0000, 0b1000, 0b0100, 0b1100,
 																			 			0b0001, 0b1001, 0b0101, 0b1101,
 																						0b0011, 0b1011, 0b0111, 0b1111};
 
-
-//typedef const uint8_t DEFAULT_MSX_KEYB_DATABASE_CONVERSION[(uint16_t)320][(uint8_t)DB_NUM_COLS] t_database;
-//typedef (const uint8_t t_database[(uint16_t)320][(uint8_t)DB_NUM_COLS]);
-//typedef struct { int dia; char mes[10]; int ano;} Data;
 
 void msxmap::msx_interface_setup(void)
 {
@@ -205,9 +210,9 @@ void msxmap::msxqueuekeys(void)
 	{
 		//This routine is allways called AFTER the mapped condition has been tested 
 		readkey = get_msx_disp_keys_queue_buffer();
-		y_local = (readkey & 0xF0) >> 4;
-		x_local = readkey & 0x07;
-		x_local_setb = ((readkey & PRESS_RELEASE_BIT) >> PRESS_RELEASE_BIT_POSITION) == (uint8_t)1;
+		y_local = (readkey & Y_LOCAL_MASK) >> NIBBLE;
+		x_local = readkey & X_LOCAL_MASK;
+		x_local_setb = ((readkey & X_POLARITY_BIT_MASK) >> X_POLARITY_BIT_POSITION) == (uint8_t)1;
 		// Compute x_bits of ch and verifies when Y was last updated,
 		// with aim to update MSX keys, no matters if the MSX has the interrupts stucked. 
 		compute_x_bits_and_check_interrupt_stuck(y_local, x_local, x_local_setb);
@@ -253,7 +258,8 @@ void msxmap::convert2msx()
 				usart_send_string((uint8_t*)"Reset requested\r\n");
 				//Wait here .3 second to consolidate this power off
 				uint32_t readsysticks = systicks;
-				while (systicks <= (readsysticks + 10)) __asm("nop");	//wait 1/3 second
+				//wait 1/3 second
+				while (systicks <= (readsysticks + 10)) __asm("nop");
 				systick_interrupt_disable();
 				for(;;) {};//Wait here until reset
 			}
@@ -423,33 +429,55 @@ void msxmap::convert2msx()
 void msxmap::msx_dispatch(void)
 {
 	volatile uint8_t y_local, x_local;
-	uint16_t msx_Y_scan;
 	volatile bool x_local_setb;
 
-	//Qual o tipo de Mapeamento?
+	//Which is the mapping type?
 	
 	switch(*(base_of_database+linhavarrida*DB_NUM_COLS+3) & 0x03)
 	{
 		case 0:
 		{	// .0 - Mapeamento default (Colunas 4 e 5)
-			// Tecla 1:
-			y_local = (*(base_of_database+linhavarrida*DB_NUM_COLS+4) & (uint8_t)0xF0) >> 4;
+			// Key 0:
+			y_local = (*(base_of_database+linhavarrida*DB_NUM_COLS+CASE0_KEY0));
+			y_local = (*(base_of_database+linhavarrida*DB_NUM_COLS+CASE0_KEY0) & (uint8_t)Y_LOCAL_MASK);
+			y_local = (*(base_of_database+linhavarrida*DB_NUM_COLS+CASE0_KEY0) & (uint8_t)Y_LOCAL_MASK) >> NIBBLE;
 			// Verifica se está mapeada
 			if (y_local != y_dummy)
 			{
-				x_local = *(base_of_database+linhavarrida*DB_NUM_COLS+4) & (uint8_t)0x07;
-				x_local_setb = ((*(base_of_database+linhavarrida*DB_NUM_COLS+4) & (uint8_t)PRESS_RELEASE_BIT) >> PRESS_RELEASE_BIT_POSITION) == (uint8_t)1;
-				// Calcula x_bits da Tecla 1 e verifica se o tempo em que foi atualizado o dado de Linha X da Coluna Y,
+				x_local = *(base_of_database+linhavarrida*DB_NUM_COLS+CASE0_KEY0) & (uint8_t)X_LOCAL_MASK;
+				x_local_setb = (*(base_of_database+linhavarrida*DB_NUM_COLS+CASE0_KEY0) & (uint8_t)X_POLARITY_BIT_MASK) >> X_POLARITY_BIT_POSITION;
+				// Calcula x_bits da Key 0 e verifica se o tempo em que foi atualizado o dado de Linha X da Coluna Y,
 				// com a finalidade de atualizar teclas mesmo sem o PPI ser atualizado. 
 				compute_x_bits_and_check_interrupt_stuck(y_local, x_local, x_local_setb);
+				//Verify if break
+				if( (y_local == 7) && (x_local == 4) )
+				{
+					put_msx_disp_keys_queue_buffer(*(base_of_database+linhavarrida*DB_NUM_COLS+CASE0_KEY0));
+					put_msx_disp_keys_queue_buffer(*(base_of_database+linhavarrida*DB_NUM_COLS+CASE0_KEY0));
+					put_msx_disp_keys_queue_buffer(*(base_of_database+linhavarrida*DB_NUM_COLS+CASE0_KEY0) ||
+																					((uint8_t)X_POLARITY_BIT_MASK));
+				}
 			}
-			// Tecla 2:
-			y_local = (*(base_of_database+linhavarrida*DB_NUM_COLS+5) & (uint8_t)0xF0) >> 4;
+			// Key 1:
+			y_local = (*(base_of_database+linhavarrida*DB_NUM_COLS+CASE0_KEY1) & (uint8_t)Y_LOCAL_MASK) >> NIBBLE;
 			// Verifica se está mapeada
 			if (y_local != y_dummy)
 			{
-				put_msx_disp_keys_queue_buffer(*(base_of_database+linhavarrida*DB_NUM_COLS+5));
-			}
+				x_local = *(base_of_database+linhavarrida*DB_NUM_COLS+CASE0_KEY1) & (uint8_t)X_LOCAL_MASK;
+				if( (Y_SHIFT == y_local) && (X_SHIFT == x_local) )	//if SHIFT, return to shiftstate
+				{
+					//Shift key
+					if(shiftstate)
+						put_msx_disp_keys_queue_buffer(Y_SHIFT<<NIBBLE | X_SHIFT);	//return MSX Shift key as pressed state
+					else
+						put_msx_disp_keys_queue_buffer(Y_SHIFT<<NIBBLE | X_POLARITY_BIT_MASK | X_SHIFT);	//return MSX Shift key as released state
+				}	//if( (Y_SHIFT == y_local) && (X_SHIFT == x_local) )
+				else // if( (Y_SHIFT == y_local) && (X_SHIFT = x_local) )
+				{
+					//No Shift key
+					put_msx_disp_keys_queue_buffer(*(base_of_database+linhavarrida*DB_NUM_COLS+CASE0_KEY1));
+				}	//else // if( (Y_SHIFT == y_local) && (X_SHIFT == x_local) )
+			}	//if (y_local != y_dummy)
 			break;
 		} // .0 - Mapeamento default (Colunas 4 e 5)
 
@@ -457,47 +485,71 @@ void msxmap::msx_dispatch(void)
 		{	// .1 - Mapeamento NumLock (Colunas 6 e 7)
 			if (ps2numlockstate ^ shiftstate)
 			{
-				//numlock e Shift tem estados diferentes
-				// Tecla 1 (PS/2 NumLock ON (Default)):
-				y_local = (*(base_of_database+linhavarrida*DB_NUM_COLS+4) & (uint8_t)0xF0)  >> 4;
+				//numlock and Shift have different status
+				// Key 0 (PS/2 NumLock ON (Default)):
+				y_local = (*(base_of_database+linhavarrida*DB_NUM_COLS+CASE0_KEY0) & (uint8_t)Y_LOCAL_MASK)  >> NIBBLE;
 				// Verifica se está mapeada
 				if (y_local != y_dummy)
 				{
-					x_local = *(base_of_database+linhavarrida*DB_NUM_COLS+4) & (uint8_t)0x07;
-					x_local_setb = ((*(base_of_database+linhavarrida*DB_NUM_COLS+4) & PRESS_RELEASE_BIT) >> PRESS_RELEASE_BIT_POSITION) == (uint8_t)1;
-					// Calcula x_bits da Tecla 1 e verifica se o tempo em que foi atualizado o dado de Linha X da Coluna Y,
-					// com a finalidade de atualizar teclas mesmo sem o PPI ser atualizado. 
+					x_local = *(base_of_database+linhavarrida*DB_NUM_COLS+CASE0_KEY0) & (uint8_t)X_LOCAL_MASK;
+					x_local_setb = (*(base_of_database+linhavarrida*DB_NUM_COLS+CASE0_KEY0) & (uint8_t)X_POLARITY_BIT_MASK) >> X_POLARITY_BIT_POSITION;
 					compute_x_bits_and_check_interrupt_stuck(y_local, x_local, x_local_setb);
 				}
-				// Tecla 2 (PS/2 NumLock ON (Default)):
-				y_local = (*(base_of_database+linhavarrida*DB_NUM_COLS+5) & (uint8_t)0xF0) >> 4;
+				// Key 1 (PS/2 NumLock ON (Default)):
+				y_local = (*(base_of_database+linhavarrida*DB_NUM_COLS+CASE0_KEY1) & (uint8_t)Y_LOCAL_MASK) >> NIBBLE;
 				// Verifica se está mapeada
 				if (y_local != y_dummy)
 				{
-					put_msx_disp_keys_queue_buffer(*(base_of_database+linhavarrida*DB_NUM_COLS+5));
-				}
+					x_local = *(base_of_database+linhavarrida*DB_NUM_COLS+CASE0_KEY1) & (uint8_t)X_LOCAL_MASK;
+					if( (Y_SHIFT == y_local) && (X_SHIFT == x_local) )	//if SHIFT, return to shiftstate
+					{
+						//Shift key
+						if(shiftstate)
+							put_msx_disp_keys_queue_buffer(Y_SHIFT<<NIBBLE | X_SHIFT);	//return MSX Shift key as pressed state
+						else
+							put_msx_disp_keys_queue_buffer(Y_SHIFT<<NIBBLE | X_POLARITY_BIT_MASK | X_SHIFT);	//return MSX Shift key as released state
+					}	//if( (Y_SHIFT == y_local) && (X_SHIFT == x_local) )
+					else // if( (Y_SHIFT == y_local) && (X_SHIFT == x_local) )
+					{
+						//No Shift key
+						put_msx_disp_keys_queue_buffer(*(base_of_database+linhavarrida*DB_NUM_COLS+CASE0_KEY1));
+					}	//else // if( (Y_SHIFT == y_local) && (X_SHIFT == x_local) )
+				}	//if (y_local != y_dummy)
 			}
 			else //if (ps2numlockstate ^ shiftstate)
 			{
 				//numlock e Shift tem mesmo estado
 				// Verifica se ha teclas mapeadas
-				// Tecla 1 (PS/2 NumLock OFF):
-				y_local = (*(base_of_database+linhavarrida*DB_NUM_COLS+6) & (uint8_t)0xF0)  >> 4;
+				// Key 0 (PS/2 NumLock OFF):
+				y_local = (*(base_of_database+linhavarrida*DB_NUM_COLS+CASE1_KEY0) & (uint8_t)Y_LOCAL_MASK)  >> NIBBLE;
 				// Verifica se está mapeada
 				if (y_local != y_dummy)
 				{
-					x_local = *(base_of_database+linhavarrida*DB_NUM_COLS+6) & (uint8_t)0x07;
-					x_local_setb = ((*(base_of_database+linhavarrida*DB_NUM_COLS+6) & (uint8_t)PRESS_RELEASE_BIT) >> PRESS_RELEASE_BIT_POSITION) == (uint8_t)1;
-					// Calcula x_bits da Tecla 1 e verifica se o tempo em que foi atualizado o dado de Linha X da Coluna Y,
+					x_local = *(base_of_database+linhavarrida*DB_NUM_COLS+CASE1_KEY0) & (uint8_t)X_LOCAL_MASK;
+					x_local_setb = (*(base_of_database+linhavarrida*DB_NUM_COLS+CASE1_KEY0) & (uint8_t)X_POLARITY_BIT_MASK) >> X_POLARITY_BIT_POSITION;
+					// Calcula x_bits da Key 0 e verifica se o tempo em que foi atualizado o dado de Linha X da Coluna Y,
 					// com a finalidade de atualizar teclas mesmo sem o PPI ser atualizado. 
 					compute_x_bits_and_check_interrupt_stuck(y_local, x_local, x_local_setb);
 				}
-				// Tecla 2 (PS/2 NumLock OFF):
-				y_local = (*(base_of_database+linhavarrida*DB_NUM_COLS+7) & (uint8_t)0xF0) >> (uint8_t)4;
+				// Key 1 (PS/2 NumLock OFF):
+				y_local = (*(base_of_database+linhavarrida*DB_NUM_COLS+CASE1_KEY1) & (uint8_t)Y_LOCAL_MASK) >> NIBBLE;
 				// Verifica se está mapeada
 				if (y_local != y_dummy)
 				{
-					put_msx_disp_keys_queue_buffer(*(base_of_database+linhavarrida*DB_NUM_COLS+7));
+					x_local = *(base_of_database+linhavarrida*DB_NUM_COLS+CASE1_KEY1) & (uint8_t)X_LOCAL_MASK;
+					if( (Y_SHIFT == y_local) && (X_SHIFT == x_local) )
+					{
+						//Shift key
+						if(shiftstate)
+							put_msx_disp_keys_queue_buffer(Y_SHIFT<<NIBBLE | X_SHIFT);	//return MSX Shift key as pressed state
+						else
+							put_msx_disp_keys_queue_buffer(Y_SHIFT<<NIBBLE | X_POLARITY_BIT_MASK | X_SHIFT);	//return MSX Shift key as released state
+					}	//if( (Y_SHIFT == y_local) && (X_SHIFT == x_local) )
+					else // if( (Y_SHIFT == y_local) && (X_SHIFT == x_local) )
+					{
+						//No Shift key
+						put_msx_disp_keys_queue_buffer(*(base_of_database+linhavarrida*DB_NUM_COLS+CASE1_KEY1));
+					}	//else // if( (Y_SHIFT == y_local) && (X_SHIFT == x_local) )
 				}
 			} //if (ps2numlockstate ^ shiftstate)
 			break;
@@ -507,90 +559,74 @@ void msxmap::msx_dispatch(void)
 		{	// .2 - Mapeamento alternativo (PS/2 Left and Right Shift)  (Colunas 8 e 9)
 			if (!shiftstate)
 			{
-				// Tecla 1 (PS/2 NumLock ON (Default)):
-				y_local = (*(base_of_database+linhavarrida*DB_NUM_COLS+4) & (uint8_t)0xF0)  >> 4;
+				// Key 0 (PS/2 NumLock ON (Default)):
+				y_local = (*(base_of_database+linhavarrida*DB_NUM_COLS+CASE0_KEY0) & (uint8_t)Y_LOCAL_MASK)  >> NIBBLE;
 				// Verifica se está mapeada
 				if (y_local != y_dummy)
 				{
-					x_local = *(base_of_database+linhavarrida*DB_NUM_COLS+4) & (uint8_t)0x07;
-					x_local_setb = ((*(base_of_database+linhavarrida*DB_NUM_COLS+4) & (uint8_t)PRESS_RELEASE_BIT) >> PRESS_RELEASE_BIT_POSITION) == (uint8_t)1;
-					// Calcula x_bits da Tecla 1 e verifica se o tempo em que foi atualizado o dado de Linha X da Coluna Y,
+					x_local = *(base_of_database+linhavarrida*DB_NUM_COLS+CASE0_KEY0) & (uint8_t)X_LOCAL_MASK;
+					x_local_setb = (*(base_of_database+linhavarrida*DB_NUM_COLS+CASE0_KEY0) & (uint8_t)X_POLARITY_BIT_MASK) >> X_POLARITY_BIT_POSITION;
+					// Calcula x_bits da Key 0 e verifica se o tempo em que foi atualizado o dado de Linha X da Coluna Y,
 					// com a finalidade de atualizar teclas mesmo sem o PPI ser atualizado. 
 					compute_x_bits_and_check_interrupt_stuck(y_local, x_local, x_local_setb);
 				}
-				// Tecla 2 (PS/2 NumLock ON (Default)):
-				y_local = (*(base_of_database+linhavarrida*DB_NUM_COLS+5) & (uint8_t)0xF0) >> 4;
+				// Key 1 (PS/2 NumLock ON (Default)):
+				y_local = (*(base_of_database+linhavarrida*DB_NUM_COLS+CASE0_KEY1) & (uint8_t)Y_LOCAL_MASK) >> NIBBLE;
 				// Verifica se está mapeada
 				if (y_local != y_dummy)
 				{
-					put_msx_disp_keys_queue_buffer(*(base_of_database+linhavarrida*DB_NUM_COLS+5));
+					put_msx_disp_keys_queue_buffer(*(base_of_database+linhavarrida*DB_NUM_COLS+CASE0_KEY1));
 				}
 			}
-			else //if (!shiftstate) => now, after this else, shiftstate is true (ON)
+			else //case 2: if (!shiftstate) => now, after this else, shiftstate is true (ON)
 			{
 				// Verifica se ha teclas mapeadas
-				// Tecla 1 (PS/2 Left and Right Shift):
-				y_local = (*(base_of_database+linhavarrida*DB_NUM_COLS+8) & (uint8_t)0xF0) >> 4;
+				// Key 0 (PS/2 Left and Right Shift):
+				y_local = (*(base_of_database+linhavarrida*DB_NUM_COLS+CASE2_KEY0) & (uint8_t)Y_LOCAL_MASK) >> NIBBLE;
 				// Verifica se está mapeada
 				if (y_local != y_dummy)
 				{
-					if (*(base_of_database+linhavarrida*DB_NUM_COLS+8) == (uint8_t)0x64) //if CODE key is to be pressed
+					x_local = *(base_of_database+linhavarrida*DB_NUM_COLS+CASE2_KEY0) & (uint8_t)X_LOCAL_MASK;
+					x_local_setb = (*(base_of_database+linhavarrida*DB_NUM_COLS+CASE2_KEY0) & (uint8_t)X_POLARITY_BIT_MASK) >> X_POLARITY_BIT_POSITION;
+					if (*(base_of_database+linhavarrida*DB_NUM_COLS+CASE2_KEY0) == (uint8_t)0x64) //if CODE key is to be pressed
 					{
-						x_bits[Y_SHIFT] = (x_bits[Y_SHIFT] | X0_SET_OR) & X0_SET_AND;		//then Release MSX Shift key
-						//verify if the Y interrupts are stucked 
-						if (systicks - previous_y_systick[Y_SHIFT] > MAX_TIME_OF_IDLE_KEYSCAN_SYSTICKS)
-						{
-							//MSX is not updating Y, so updating keystrokes by interrupts is not working
-							//Verify the actual hardware Y_SCAN
-							// First I have to disable Y_SCAN interrupts, to avoid misspelling due to updates
-							exti_disable_request(Y3_exti | Y2_exti | Y1_exti | Y0_exti);
-							// Read the MSX keyboard Y scan through GPIO pins A5:A8, mask to 0 other bits and rotate right 5
-							msx_Y_scan = (gpio_port_read(Y0_port) & Y_MASK) >> 5;
-							if (msx_Y_scan == Y_SHIFT)
-							{
-								GPIOB_BSRR = x_bits[Y_SHIFT]; //Atomic GPIOB update => Release and press MSX keys for this column
-								//update time marker for previous_y_systick[Y_SHIFT]
-								previous_y_systick[Y_SHIFT] = systicks;
-							}
-							//Than reenable Y_SCAN interrupts
-							exti_enable_request(Y0_exti | Y1_exti | Y2_exti | Y3_exti);
-						}
-					}  //if (*(base_of_database+linhavarrida*DB_NUM_COLS+8) == 0x64) //if CODE key pressed
-					if (*(base_of_database+linhavarrida*DB_NUM_COLS+8) == (uint8_t)0x6C) //if CODE key released
+						//then first release MSX Shift key
+						compute_x_bits_and_check_interrupt_stuck(Y_SHIFT, X_SHIFT, true);
+						//and so, press CODE
+						put_msx_disp_keys_queue_buffer(*(base_of_database+linhavarrida*DB_NUM_COLS+CASE2_KEY0));
+					}  //if (*(base_of_database+linhavarrida*DB_NUM_COLS+CASE2_KEY0) == 0x64) //if CODE key pressed
+					else if (*(base_of_database+linhavarrida*DB_NUM_COLS+CASE2_KEY0) == (uint8_t)0x6C) //if CODE key released
 					{
-						x_bits[Y_SHIFT] = (x_bits[Y_SHIFT] & X0_CLEAR_AND) | X0_CLEAR_OR;		//then Press MSX Shift key
-						if (systicks - previous_y_systick[Y_SHIFT] > MAX_TIME_OF_IDLE_KEYSCAN_SYSTICKS)
-						{
-							//MSX is not updating Y, so updating keystrokes by interrupts is not working
-							//Verify the actual hardware Y_SCAN
-							// First I have to disable Y_SCAN interrupts, to avoid misspelling due to updates
-							exti_disable_request(Y3_exti | Y2_exti | Y1_exti | Y0_exti);
-							// Read the MSX keyboard Y scan through GPIO pins A5:A8, mask to 0 other bits and rotate right 5
-							msx_Y_scan = (gpio_port_read(Y0_port) & Y_MASK) >> 5;
-							if (msx_Y_scan == Y_SHIFT)
-							{
-								GPIOB_BSRR = x_bits[Y_SHIFT];
-								//update time marker for previous_y_systick[Y_SHIFT]
-								previous_y_systick[Y_SHIFT] = systicks;
-							}
-							//Than reenable Y_SCAN interrupts
-							exti_enable_request(Y0_exti | Y1_exti | Y2_exti | Y3_exti);
-						}
-					}	//if (*(base_of_database+linhavarrida*DB_NUM_COLS+8) == 0x6C) //if CODE key released
-					//Process Code key 
-					put_msx_disp_keys_queue_buffer(*(base_of_database+linhavarrida*DB_NUM_COLS+8));
-				}
-				// Tecla 2 (PS/2 Left and Right Shift):
-				y_local = (*(base_of_database+linhavarrida*DB_NUM_COLS+9) & (uint8_t)0xF0) >> 4;
+						//So, first release CODE
+						compute_x_bits_and_check_interrupt_stuck(y_local, x_local, x_local_setb);
+						//and then, return MSX Shift key as pressed state
+						put_msx_disp_keys_queue_buffer(Y_SHIFT<<4 | X_SHIFT);
+					}	//if (*(base_of_database+linhavarrida*DB_NUM_COLS+CASE2_KEY0) == 0x6C) //if CODE key released
+					else
+					{
+						compute_x_bits_and_check_interrupt_stuck(y_local, x_local, x_local_setb);
+					}
+				}	//if (y_local != y_dummy)
+				// Key 1 (PS/2 Left and Right Shift):
+				y_local = (*(base_of_database+linhavarrida*DB_NUM_COLS+CASE2_KEY1) & (uint8_t)Y_LOCAL_MASK) >> NIBBLE;
 				// Verifica se está mapeada
 				if (y_local != y_dummy)
 				{
-					put_msx_disp_keys_queue_buffer(*(base_of_database+linhavarrida*DB_NUM_COLS+9));
-				}
-			} //if (shiftstate)
+					//So, first send CODE released, or another one
+					put_msx_disp_keys_queue_buffer(*(base_of_database+linhavarrida*DB_NUM_COLS+CASE2_KEY1));
+					if (*(base_of_database+linhavarrida*DB_NUM_COLS+CASE2_KEY1) == (uint8_t)0x6C) //if CODE key released
+					{
+						//and then, if it is CODE Release, return MSX Shift key as shiftstate
+						if(shiftstate)
+							put_msx_disp_keys_queue_buffer(Y_SHIFT<<NIBBLE | X_SHIFT);	//return MSX Shift key as pressed state
+						else
+							put_msx_disp_keys_queue_buffer(Y_SHIFT<<NIBBLE | X_POLARITY_BIT_MASK | X_SHIFT);	//return MSX Shift key as released state
+					}	//if (*(base_of_database+linhavarrida*DB_NUM_COLS+CASE2_KEY1) == 0x6C) //if CODE key released
+				}	//if (y_local != y_dummy)
+			}	//case 2: if (!shiftstate)
 		}  // .2 - Mapeamento alternativo  (PS/2 Left  and Right Shift)  (Colunas 8 e 9)
-	}
-}
+	}	//switch(*(base_of_database+linhavarrida*DB_NUM_COLS+3) & 0x03)
+}	//void msxmap::msx_dispatch(void)
 
 void msxmap::compute_x_bits_and_check_interrupt_stuck (
 	volatile uint8_t y_local, uint8_t x_local, bool x_local_setb)
@@ -703,8 +739,7 @@ void msxmap::compute_x_bits_and_check_interrupt_stuck (
 			}
 		}
 	}
-
-	//ver se o tempo em que foi atualizado o dado de Linha X da Coluna Y, com a finalidade de atualizar teclas mesmo sem o PPI ser atualizado. 
+	//See when the Y colunm's XLine was updated, in order to update keys even without the PPI being updated.
 	if (systicks - previous_y_systick[y_local] > MAX_TIME_OF_IDLE_KEYSCAN_SYSTICKS)
 	{
 		//MSX is not updating Y, so updating keystrokes by interrupts is not working
@@ -745,8 +780,7 @@ void exti9_5_isr(void) // PC3, PC2, PC1 and PC0 - This ISR works like interrupt 
 	//gpio_set(Dbg_Yint_port, Dbg_Yint_pin_id); //Signs end of interruption. Default condition is "1". This line is useful only to measure performance, ie, only in development phase
 	GPIO_BSRR(Dbg_Yint_port) = Dbg_Yint_pin_id;
 
-	// Clear interrupt Y Scan flags, including that not used on this ISR
-	// if(exti_get_flag_status(EXTI9), (EXTI6), (EXTI4) and (EXTI3))
+	// Clear interrupt Y Scan flags
 	exti_reset_request(Y0_exti | Y1_exti | Y2_exti | Y3_exti);
     
 	//Update systicks (time stamp) for this Y

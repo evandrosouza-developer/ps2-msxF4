@@ -75,17 +75,18 @@ void cleanupFlash(bool*, uint16_t*);
 bool error_intel_hex;
 bool abort_intelhex_reception;
 bool compatible_database;
-extern uint8_t UNUSED_DATABASE[DB_NUM_COLS];	//Declared on msxmap.cpp
-extern uint32_t *base_of_database;						//Declared on msxmap.cpp
-extern volatile bool update_ps2_leds;					//Declared on msxmap.cpp
-extern uint8_t y_dummy;												//Declared on msxmap.cpp
-extern bool ps2numlockstate;									//Declared on ps2handl.c
-extern bool enable_xon_xoff;									//Declared on serial.c
+extern uint8_t UNUSED_DATABASE[DB_NUM_COLS];			//Declared on msxmap.cpp
+extern uint32_t *base_of_database;								//Declared on msxmap.cpp
+extern volatile bool update_ps2_leds;							//Declared on msxmap.cpp
+extern uint8_t y_dummy;														//Declared on msxmap.cpp
+extern bool ps2numlockstate;											//Declared on ps2handl.c
+extern bool ps2_keyb_detected;										//Declared on ps2handl.c
+extern bool enable_xon_xoff;											//Declared on serial.c
 
 
 void database_setup(void)
 {
-	uint8_t flash_buffer_ram[DATABASE_SIZE]; 			//Local variable, in aim to not consume resources in the main functional machine
+	uint8_t flash_buffer_ram[DATABASE_SIZE]; 				//Local variable, in aim to not consume resources in the main functional machine
 	uint8_t ch, str_mount[STRING_MOUNT_BUFFER_SIZE];
 	uint32_t iter;
 	volatile uint32_t*base_of_database32;
@@ -96,45 +97,48 @@ void database_setup(void)
 
 	compatible_database = true;
 	
-	//The user wants to reset Database to system's defaults
-	//Firstly verify if some character was sent to USART during BAT waiting
-	if (serial_available_get_char())
+	if (!ps2_keyb_detected)	// The user request to force init Database is done only if there is no keyboard
 	{
-		//Clean RX serial buffer
-		while (serial_available_get_char())
+		//The user wants to reset Database to system's defaults
+		//Firstly verify if some character was sent to USART during BAT waiting
+		if (serial_available_get_char() && !ps2_keyb_detected)
+		{
+			//Clean RX serial buffer
+			while (serial_available_get_char())
+				ch = serial_get_char();
+			//USER_KEY is exclusive of WeAct board
+			if (!gpio_get(USER_KEY_PORT, USER_KEY_PIN_ID))
+			{
+				usart_send_string((uint8_t*)"\r\n\nOk. Now release user key...");
+				while (!gpio_get(USER_KEY_PORT, USER_KEY_PIN_ID))	//But stay here until the button is released
+					__asm("NOP");
+			}
+			usart_send_string((uint8_t*)"\r\nCleanup Database Flash. Press ""&"" to proceed or any other key to abort");
+			//Read a key
+			while (!serial_available_get_char())
+				__asm("nop");
 			ch = serial_get_char();
-		//USER_KEY is exclusive of WeAct board
+			if(ch == '&')
+				cleanupFlash(&sector_erased, &attempts_erasing_sector);
+		}
 		if (!gpio_get(USER_KEY_PORT, USER_KEY_PIN_ID))
 		{
+			//USER_KEY is pressed: Perform Flash clean
 			usart_send_string((uint8_t*)"\r\n\nOk. Now release user key...");
 			while (!gpio_get(USER_KEY_PORT, USER_KEY_PIN_ID))	//But stay here until the button is released
 				__asm("NOP");
-		}
-		usart_send_string((uint8_t*)"\r\nCleanup Database Flash. Press ""&"" to proceed or any other key to abort");
-		//Read a key
-		while (!serial_available_get_char())
-			__asm("nop");
-		ch = serial_get_char();
-		if(ch == '&')
-			cleanupFlash(&sector_erased, &attempts_erasing_sector);
-	}
-	if (!gpio_get(USER_KEY_PORT, USER_KEY_PIN_ID))
-	{
-		//USER_KEY is pressed: Perform Flash clean
-		usart_send_string((uint8_t*)"\r\n\nOk. Now release user key...");
-		while (!gpio_get(USER_KEY_PORT, USER_KEY_PIN_ID))	//But stay here until the button is released
-			__asm("NOP");
-		usart_send_string((uint8_t*)"\r\nCleanup Database Flash. Press ""&"" to proceed or any other key to abort");
-		//Read a key
-		while (!serial_available_get_char())
-			__asm("nop");
-		ch = serial_get_char();
-		if(ch == '&')
-			cleanupFlash(&sector_erased, &attempts_erasing_sector);
-		else
-			usart_send_string((uint8_t*)"\r\n\n");
+			usart_send_string((uint8_t*)"\r\nCleanup Database Flash. Press ""&"" to proceed or any other key to abort");
+			//Read a key
+			while (!serial_available_get_char())
+				__asm("nop");
+			ch = serial_get_char();
+			if(ch == '&')
+				cleanupFlash(&sector_erased, &attempts_erasing_sector);
+			else
+				usart_send_string((uint8_t*)"\r\n\n");
 
-	}	//if (!gpio_get(USER_KEY_PORT, USER_KEY_PIN_ID))
+		}	//if (!gpio_get(USER_KEY_PORT, USER_KEY_PIN_ID))
+	}	//if (!ps2_keyb_detected)	// The user request to force init Database is done only if there is no keyboard
 
 	// if INITIAL_DATABASE is unprogrammed
 	bool empty_database = true;
