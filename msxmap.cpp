@@ -14,8 +14,6 @@
 
 #define MAX_LINHAS_VARRIDAS								320	//To acommodate maximum size of 3200 (320 lines of 10 bytes each - header included)
 #define MAX_TIME_OF_IDLE_KEYSCAN_SYSTICKS	5		//30 / 5 = 6 times per second is the maximum sweep speed
-#define	Y_SHIFT														6		//Shift colunm
-#define	X_SHIFT														0		//Shift line
 #define	NIBBLE														4
 #define	CASE0_KEY0												4
 #define	CASE0_KEY1												5
@@ -27,6 +25,10 @@
 #define X_POLARITY_BIT_MASK								(1 << X_POLARITY_BIT_POSITION) //8
 #define	Y_LOCAL_MASK											0xF0//Mask of Y on press/release command byte
 #define	X_LOCAL_MASK											7		//Mask of X on press/release command byte
+#define	Y_SHIFT														6		//Shift colunm
+#define	X_SHIFT														0		//Shift line
+#define	Y_STOP														7		//Stop key colunm
+#define	X_STOP														4		//Stop key line
 
 //Variáveis globais: Visíveis por todo o contexto do programa
 uint8_t* base_of_database;
@@ -127,11 +129,12 @@ void msxmap::msx_interface_setup(void)
 	gpio_port_config_lock(Y0_port, Y0_pin_id);
 
 	// GPIO pins for MSX keyboard Y scan (PC3:0 of the MSX 8255 - PC0 MSX 8255 Pin 14),
-	// CAP_LED and KANA/Cyrillic_LED (mapped to scroll lock) to replicate in PS/2 keyboard
-	// Set to input and enable internal pulldown
+	// CAPS_LED and KANA/Cyrillic_LED (mapped to scroll lock) to replicate in PS/2 keyboard
+	// Set both to input and enable internal pullup
 
 	// CAPS_LED
 	gpio_mode_setup(CAPSLOCK_port, GPIO_MODE_INPUT, GPIO_PUPD_PULLUP, CAPSLOCK_pin_id); // CAP_LED (MSX 8255 Pin 11)
+	gpio_set(CAPSLOCK_port, CAPSLOCK_pin_id); //pull up resistor
 	gpio_port_config_lock(CAPSLOCK_port, CAPSLOCK_pin_id);
 
 	// Kana LED
@@ -142,8 +145,11 @@ void msxmap::msx_interface_setup(void)
 	// Enable EXTI9_5 interrupt. (for Y - bits 3 to 0)
 	nvic_enable_irq(NVIC_EXTI9_5_IRQ);
 
-	//Highest priority to avoid interrupt Y scan
+	//Highest priority to avoid interrupt Y scan loss
 	nvic_set_priority(NVIC_EXTI9_5_IRQ, 10); 		//Y3 to Y0
+
+	//Workarround here to stop watchdog counters during halt
+	DBGMCU_APB1_FZ = DBG_IWDG_STOP | DBG_WWDG_STOP | DBG_TIM2_STOP;
 }
 
 
@@ -274,7 +280,7 @@ void msxmap::convert2msx()
 	{
 		//NumLock Pressed. Toggle NumLock status
 		ps2numlockstate = !ps2numlockstate;
-		update_ps2_leds = true;  //this will force update_leds at main loop => To save interrupt time
+		update_ps2_leds = true;  //this will force update_leds at main loop
 		return;
 	}
 
@@ -293,14 +299,30 @@ void msxmap::convert2msx()
 	{
 		//Shift Released (Break code).
 		shiftstate = false;
-		//return;
+	}
+
+	if (
+	((scancode[0] == (uint8_t)3)		&&
+	( scancode[1] == (uint8_t)0xE1) &&
+	( scancode[2] == (uint8_t)0x14) &&
+	( scancode[3] == (uint8_t)0x77))	||
+	((scancode[0] == (uint8_t)2)		&&
+	( scancode[1] == (uint8_t)0xE0)	&&
+	( scancode[2] == (uint8_t)0x7E))	)
+	{
+		//Pause Break Key & Control + Break (Control was already sent at this time).
+		//Create an effect of press and release of MSX STOP, through:
+		//dispatch MSX STOP pressed 3 times and 1 MSX STOP release
+		for(uint16_t i = 0; i < 3; i++)	//Keep the MSX STOP key pressed for a while
+			put_msx_disp_keys_queue_buffer(Y_STOP<<NIBBLE | X_STOP);
+		put_msx_disp_keys_queue_buffer(Y_STOP<<NIBBLE | X_POLARITY_BIT_MASK | X_STOP);	//Then release MSX STOP key
+		return;
 	}
 
 	//Now searches for PS/2 scan code in MSX Table to match. First search first colunm
 	linhavarrida = 1;
 	while ( 
 	//(MSX_KEYB_DATABASE_CONVERSION[linhavarrida][0] != scancode[1]) &&
-	//(base_of_database[linhavarrida][0] != scancode[1]) &&
 	(*(base_of_database+linhavarrida*DB_NUM_COLS+0) != scancode[1]) &&
 	(linhavarrida < MAX_LINHAS_VARRIDAS) )
 	{
@@ -438,8 +460,6 @@ void msxmap::msx_dispatch(void)
 		case 0:
 		{	// .0 - Mapeamento default (Colunas 4 e 5)
 			// Key 0:
-			y_local = (*(base_of_database+linhavarrida*DB_NUM_COLS+CASE0_KEY0));
-			y_local = (*(base_of_database+linhavarrida*DB_NUM_COLS+CASE0_KEY0) & (uint8_t)Y_LOCAL_MASK);
 			y_local = (*(base_of_database+linhavarrida*DB_NUM_COLS+CASE0_KEY0) & (uint8_t)Y_LOCAL_MASK) >> NIBBLE;
 			// Verifica se está mapeada
 			if (y_local != y_dummy)
@@ -740,7 +760,7 @@ void msxmap::compute_x_bits_and_check_interrupt_stuck (
 		}
 	}
 	//See when the Y colunm's XLine was updated, in order to update keys even without the PPI being updated.
-	if (systicks - previous_y_systick[y_local] > MAX_TIME_OF_IDLE_KEYSCAN_SYSTICKS)
+	if (systicks - previous_y_systick[Y_XLAT_TABLE[y_local]] > MAX_TIME_OF_IDLE_KEYSCAN_SYSTICKS)
 	{
 		//MSX is not updating Y, so updating keystrokes by interrupts is not working
 		//Verify the actual hardware Y_SCAN
@@ -749,7 +769,8 @@ void msxmap::compute_x_bits_and_check_interrupt_stuck (
 		// Read the MSX keyboard Y scan through G5PIO pins A5:A8, mask to 0 other bits and rotate right 5
 		msx_Y_scan = (gpio_port_read(Y0_port) & Y_MASK) >> 5;
 		
-		GPIO_BSRR(X_port) = x_bits[msx_Y_scan]; //Atomic GPIOB update => Release and press MSX keys for this column
+		if(Y_XLAT_TABLE[y_local] == msx_Y_scan)
+			GPIO_BSRR(X_port) = x_bits[msx_Y_scan]; //Atomic GPIOB update => Release and press MSX keys for this column
 		
 		//Than reenable Y_SCAN interrupts
 		exti_enable_request(Y0_exti | Y1_exti | Y2_exti | Y3_exti);

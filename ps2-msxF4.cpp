@@ -44,11 +44,14 @@
 extern uint32_t systicks;													//Declared on sys_timer.cpp
 extern bool ps2_keyb_detected;										//Declared on ps2handl.c
 extern bool ps2numlockstate;											//Declared on ps2handl.c
+extern bool command_ok;														//Declared on ps2handl.c
 extern bool update_ps2_leds;											//Declared on msxmap.cpp
 extern bool compatible_database;									//Declared on msxmap.cpp
 extern uint8_t scancode[4];												//Declared on msxmap.cpp
 extern uint32_t formerscancode;										//Declared on msxmap.cpp
 extern bool mount_scancode_OK; 										//Declared on ps2handl.c
+bool caps_state, kana_state;
+bool caps_former, kana_former;
 
 
 int main(void)
@@ -166,13 +169,13 @@ int main(void)
 
 	// Turn on the Independent WatchDog Timer
 	iwdg_set_period_ms(67);	// 2 x sys_timer
-	//iwdg_start();
+	iwdg_start();
 
 
 	/*********************************************************************************************/
 	/************************************** Main Loop ********************************************/
 	/*********************************************************************************************/
-	uint32_t* ptr_scancode = (uint32_t*)&scancode[0];	//To consider scancode[0]..[3] as a (uint32_t*)
+	uint32_t *ptr_scancode = (uint32_t*)&scancode[0];	//To use scancode[0]..[3] as a (uint32_t*)
 	for(;;)
 	{
 		//The first functionality running in the main loop
@@ -213,11 +216,19 @@ int main(void)
 		}	//if (mount_scancode())
 
 		//The second functionality running in main loop: Update the keyboard leds
-		if(update_ps2_leds)
+		//Check MSX CAPS and Kana status update
+		caps_state = gpio_get(CAPSLOCK_port, CAPSLOCK_pin_id);
+		kana_state = gpio_get(KANA_port, KANA_pin_id);
+		if(	command_ok									&&		//Only does led update when the previous one is concluded
+				(update_ps2_leds 						||
+				(kana_state != kana_former)	|| 
+				(caps_state != caps_former) ) )
 		{
 			update_ps2_leds = false;
-			ps2_update_leds(ps2numlockstate, !gpio_get(CAPSLOCK_port, CAPSLOCK_pin_id), !gpio_get(KANA_port, KANA_pin_id));
-		}
+			caps_former = caps_state;
+			kana_former = kana_state;
+			ps2_update_leds(ps2numlockstate, !caps_state, !kana_state);
+		}	//if ( update_ps2_leds || (caps_state != caps_former) || (kana_state != kana_former) )
 
 		//Keep RX serial buffer empty and echoes to output
 		while(serial_available_get_char())

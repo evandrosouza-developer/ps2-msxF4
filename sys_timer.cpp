@@ -21,7 +21,7 @@ volatile uint16_t ticks_keys;
 volatile uint16_t last_ps2_fails=0;
 volatile uint16_t fail_count;
 extern bool ps2_keyb_detected;										//Declared on ps2handl.c
-extern bool update_ps2_leds, ps2numlockstate;			//Declared on msxmap.cpp
+extern bool update_num_lock_led, ps2numlockstate;	//Declared on msxmap.cpp
 
 
 void systick_setup(void)
@@ -58,9 +58,6 @@ void systick_setup(void)
 /*************************************************************************************************/
 void sys_tick_handler(void) // f=30Hz (Each 33,33ms)
 {
-	bool kana_state, caps_state;
-	static bool kana_former, caps_former;
-
 	iwdg_reset();	//Prevent from reset
 
 	systicks++;
@@ -86,16 +83,6 @@ void sys_tick_handler(void) // f=30Hz (Each 33,33ms)
 		{
 			msxmap objeto;
 			objeto.msxqueuekeys();
-
-			//Check MSX CAPS and Kana status update
-			caps_state = gpio_get(CAPSLOCK_port, CAPSLOCK_pin_id);
-			kana_state = gpio_get(KANA_port, KANA_pin_id);
-			if ( (caps_state != caps_former) || (kana_state != kana_former) )
-			{
-				update_ps2_leds = true;
-				caps_former = caps_state;
-				kana_former = kana_state;
-			}	//if ( (caps_state != caps_former) || (kana_state != kana_former) )
 		}	//if (!ticks_keys)
 	}
 

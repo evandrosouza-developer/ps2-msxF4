@@ -181,14 +181,14 @@ void database_setup(void)
 		flash_program((uint32_t)base_of_database_num, flash_buffer_ram, DATABASE_SIZE);
 		check_flash_error();
 
-		usart_send_string((uint8_t*)"\r\n\nVerification of written data:\r\n");
+		usart_send_string((uint8_t*)"\r\n\nVerification of written data: ");
 		//verify if correct data was written
 		for (iter = 0; iter < DATABASE_SIZE; iter+=4)	//DATABASE_SIZE must be checked
 		{
 			uint32_t iter_div4 = iter / sizeof(uint32_t);// Pointer of uint32_t has a step of 4 bytes
 			if(	*(base_of_database + iter_div4) != *((uint32_t*)(flash_buffer_ram + iter)) )
 			{
-				usart_send_string((uint8_t*)"Wrong data written into flash memory\r\n");
+				usart_send_string((uint8_t*)"\r\nWrong data written into flash memory\r\n");
 				usart_send_string((uint8_t*)"Dest add => 0x");
 				void_ptr = &str_mount;
 				conv_uint32_to_8a_hex((uintptr_t)(base_of_database + iter_div4), void_ptr);
@@ -206,6 +206,7 @@ void database_setup(void)
 				return;
 			}
 		} //for (iter = 0; iter < DATABASE_SIZE; iter+=4)	//3K must be checked
+		usart_send_string((uint8_t*)"OK.\r\n\nConsistensy verification: ");
 	}	//if (empty_database)
 
 	//Searching a valid (useful) Database. Unused databases are marked as UNUSED_DATABASE
@@ -222,7 +223,7 @@ void database_setup(void)
 		*(base_of_database8+3) == UNUSED_DATABASE[3] &&
 		*(base_of_database8+4) == UNUSED_DATABASE[4] &&
 		*(base_of_database8+5) == UNUSED_DATABASE[5] &&
-		*(base_of_database8+6) == UNUSED_DATABASE[5] &&
+		*(base_of_database8+6) == UNUSED_DATABASE[6] &&
 		*(base_of_database8+7) == UNUSED_DATABASE[7] &&
 		*(base_of_database8+8) == UNUSED_DATABASE[8] &&
 		*(base_of_database8+9) == UNUSED_DATABASE[9] )
@@ -231,7 +232,9 @@ void database_setup(void)
 			base_of_database8 = (uint8_t*)((uint32_t)INITIAL_DATABASE - displacement);
 		}
 		else
+		{
 			break;	//if it is here, it found a valid Database
+		}
 	}
 
 	//Check Database consistensy (CheckSum & BCC of the first 319 blocks of 10 bytes each)
@@ -243,13 +246,17 @@ void database_setup(void)
 	}	//for (iter = 0; iter < (DATABASE_SIZE - DB_NUM_COLS); iter ++)
 	if( ((*(base_of_database8 + (DATABASE_SIZE - 1))) != checksum)||
 			((*(base_of_database8 + (DATABASE_SIZE - 2))) != bcc)			||
-			 (*(base_of_database8 + 0) != 1) 													||
+			 (*(base_of_database8 + 0) 										!= 1) 			||
 			 (*(base_of_database8 + 1) != 0) )
 	{
 		void_ptr = &str_mount;
 		//Display bcc
 		wait_tx_ends();
-		usart_send_string((uint8_t*)"\r\n\nAddress: 0x");
+		usart_send_string((uint8_t*)"\r\nError on Database at Base address 0x");
+		conv_uint32_to_8a_hex((uintptr_t)(base_of_database8 + 0), void_ptr);
+		usart_send_string((uint8_t*)str_mount);
+		wait_tx_ends();
+		usart_send_string((uint8_t*)"\r\n\nBad data at address: 0x");
 		conv_uint32_to_8a_hex((uintptr_t)(base_of_database8 + (DATABASE_SIZE - 2)), void_ptr);
 		usart_send_string((uint8_t*)str_mount);
 		usart_send_string((uint8_t*)": computed BCC = 0x");
@@ -259,7 +266,7 @@ void database_setup(void)
 		conv_uint8_to_2a_hex(*(base_of_database8 + (DATABASE_SIZE - 2)), void_ptr);
 		usart_send_string((uint8_t*)str_mount);
 		//Display checksum
-		usart_send_string((uint8_t*)"\r\nAddress: 0x");
+		usart_send_string((uint8_t*)"\r\nBad data at address: 0x");
 		conv_uint32_to_8a_hex((uintptr_t)(base_of_database8 + (DATABASE_SIZE - 1)), void_ptr);
 		usart_send_string((uint8_t*)str_mount);
 		usart_send_string((uint8_t*)": computed CheckSum = 0x");
@@ -281,6 +288,7 @@ void database_setup(void)
 	}
 	else
 	{
+		usart_send_string((uint8_t*)"..  Database OK. Reading system parameters...\r\n");
 		y_dummy 				=  *(base_of_database8 + 3) & 0x0F; //Low nibble (no keys at this column)
 		ps2numlockstate = (*(base_of_database8 + 3) & 0x10) != 0; //Bit 4
 		enable_xon_xoff = (*(base_of_database8 + 3) & 0x20) != 0; //Bit 5
@@ -717,6 +725,7 @@ uint32_t flash_program_data(uint8_t *flash_buffer_ram)	//Local flash_buffer_ram 
 		//3K free room was not found: Perform erase of sector FLASH_SECTOR3_NUMBER
 		uint16_t attempts_erasing_sector = 0;
 		cleanupFlash(&sector_erased, &attempts_erasing_sector);
+		base_of_database = (uint32_t*)INITIAL_DATABASE;
 	}	//if (!DBaseSizeErasedPlaceFound)
 	
 	//Programming Flash Memory
@@ -828,7 +837,11 @@ uint32_t flash_program_data(uint8_t *flash_buffer_ram)	//Local flash_buffer_ram 
 				return FLASH_WRONG_DATA_WRITTEN;
 			}	//if (*(uint8_t*)(base_of_database+iter) = ch)
 		}	//for(iter = 0; iter < sizeof(UNUSED_DATABASE); iter ++)
-}
+	}	//if (base_of_database_num != INITIAL_DATABASE)
+	else
+	{
+		usart_send_string((uint8_t*)"\r\n\nNo need to null formmer Database, as it is the first one.\r\n");
+	}	//else //if (base_of_database_num != INITIAL_DATABASE)
 	usart_send_string((uint8_t*)"\r\nSuccessful!\r\n\nNow, please TURN OFF to plug the PS/2 keyboard!");
 	flash_lock();
 	return RESULT_OK;

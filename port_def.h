@@ -109,6 +109,10 @@ extern "C" {
 #define X0_SET_OR    0x00001000  // 4096
 
 //#define MMIO32(addr)	(*(volatile uint32_t *)(addr))
+#define DBGMCU_APB1_FZ 	MMIO32(DBGMCU_BASE+8)
+#define DBG_IWDG_STOP		1<<12
+#define DBG_WWDG_STOP		1<<11
+#define DBG_TIM2_STOP		1<<0
 
 #ifdef __cplusplus
 }
