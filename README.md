@@ -90,17 +90,18 @@ The structure of the Database is:
 					 1: key release;
 	(Bit 2:0) MSX X, ie, which bit will carry the key, to be read by PPI 8255 PB7:0.
 	
+## Download the code to the board
 
 STM32F4x1 MiniF4 has a DFU (Device Firmware Upgrade) to download code, so you don't need ST-Link, J-link or Black Magic Probe to download your code, so, on linux, just follow these steps:
 1) install dfu-util: 
-sudo apt install dfu-util
+`sudo apt install dfu-util`
 2) make .bin, as dfu-util is not compatible with .elf: 
-arm-none-eabi-objcopy -Obinary ps2-msxF4.elf ps2-msxF4.bin
+`arm-none-eabi-objcopy -Obinary ps2-msxF4.elf ps2-msxF4.bin`
 3) Make sure the chip is at least 25°C (you may let it working for a while);
 4) Plug the USB cable to your computer and the STM32F4 board while holding both NRST and BOOT0;
 5) Then release BOOT0 AFTER 0.5 second you released NRST;
 6) Run the command to flash the code itself:
-dfu-util -d 0483:df11 -a 0 -s 0x08000000 -D ps2-msxF4.bin
+`dfu-util -d 0483:df11 -a 0 -s 0x08000000 -D ps2-msxF4.bin`
 
 On windows you can download STM32CubeProg on ST site, replacing step 1. You have to adjust step 6 to this toool. Please follow ST instructions.
 
