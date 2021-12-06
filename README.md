@@ -1,7 +1,7 @@
 # STM32: PS/2 to USB Converter
 
-This code facilitates a STM32 chip to convert between PS/2 and MSX computer. It is meant to connect a keyboard, which only provides a PS/2 connector, to a MSX (or any one that have a up to 15 active columns and reads zeroes througth 8 bits - up to 15 x 8 matrix) computer.
-This code powers and has been tested on the following Windows keyboards with brazilian 275 layout:
+This design uses MiniSTM32F4x1 board to convert between PS/2 and MSX computer. It is meant to connect a keyboard, which only provides a PS/2 connection, to a MSX (or any one that have a up to 15 active columns and reads zeroes througth 8 bits - up to 15 x 8 matrix) retro computer.
+This code powers and has been tested on the following Windows keyboards, with brazilian 275 layout:
 - Compaq RT235BTWBR;
 - Clone KE11090749;
 - Clone #09100.
@@ -91,4 +91,17 @@ The structure of the Database is:
 	(Bit 2:0) MSX X, ie, which bit will carry the key, to be read by PPI 8255 PB7:0.
 	
 
-Although there are available to upload code to STM32F4 DFU (Device Firmware Upgrade) and serial connection, I didn't test upload the firmware using Boot0. Use a ST-Link v2 Programmer, Black Magic Probe (or similar) to flash the program using `make flash` onto the STM32.
+STM32F4x1 MiniF4 has a DFU (Device Firmware Upgrade) to download code, so you don't need ST-Link, J-link or Black Magic Probe to download your code, so, on linux, just follow these steps:
+1) install dfu-util: 
+sudo apt install dfu-util
+2) make .bin, as dfu-util is not compatible with .elf: 
+arm-none-eabi-objcopy -Obinary ps2-msxF4.elf ps2-msxF4.bin
+3) Make sure the chip is at least 25°C (you may let it working for a while);
+4) Plug the USB cable to your computer and the STM32F4 board while holding both NRST and BOOT0;
+5) Then release BOOT0 AFTER 0.5 second you released NRST;
+6) Run the command to flash the code itself:
+dfu-util -d 0483:df11 -a 0 -s 0x08000000 -D ps2-msxF4.bin
+
+On windows you can download STM32CubeProg on ST site, replacing step 1. You have to adjust step 6 to this toool. Please follow ST instructions.
+
+I recomend to use a ST-Link v2 Programmer, Black Magic Probe (or similar) to flash the program using `make flash` onto the STM32.
