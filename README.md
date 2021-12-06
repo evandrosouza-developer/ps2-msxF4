@@ -44,19 +44,19 @@ You will obviously need a STM32F401CCU6 or the newer one STM32F401CEU6 chip. I h
 
 2) MSX computer:
 Obs.: You have to access PPI Ports B0 to B7 (Lines X0 to X7), Port C0 to C3 (Y0 to Y3), Port C6 (Caps Lock, pin 11 of DIP package), and for Russian and Japanese Computers (Cyrillic and Kana alphabets), you have to get access to YM2149 IOB7, pin 6 of DIP package.
-- Y3 - Connect to MSX PPI 8255 Signal PC3;
-- Y2 - Connect to MSX PPI 8255 Signal PC2;
-- Y1 - Connect to MSX PPI 8255 Signal PC1;
-- Y0 - Connect to MSX PPI 8255 Signal PC0;
-- X7 - Connect to MSX PPI 8255 Signal PB7 (Hotbit HB-8000 CI-15 Pin 25);
-- X6 - Connect to MSX PPI 8255 Signal PB6 (Hotbit HB-8000 CI-15 Pin 24);
-- X5 - Connect to MSX PPI 8255 Signal PB5 (Hotbit HB-8000 CI-15 Pin 23);
-- X4 - Connect to MSX PPI 8255 Signal PB4 (Hotbit HB-8000 CI-15 Pin 22);
-- X3 - Connect to MSX PPI 8255 Signal PB3 (Hotbit HB-8000 CI-15 Pin 21);
-- X2 - Connect to MSX PPI 8255 Signal PB2 (Hotbit HB-8000 CI-15 Pin 20);
-- X1 - Connect to MSX PPI 8255 Signal PB1 (Hotbit HB-8000 CI-15 Pin 19);
-- X0 - Connect to MSX PPI 8255 Signal PB0 (Hotbit HB-8000 CI-15 Pin 18);
-- Caps LED - Connect to MSX PPI 8255 Signal PC6 (Hotbit HB-8000 CI-15 Pin 11 / Expert XP-800 CI-4);
+- Y3 - Connect to MSX PPI 8255 Signal PC3 (HB-8000 CI-15 Pin 17 / XP-800 CI-4 Pin 17);
+- Y2 - Connect to MSX PPI 8255 Signal PC2 (HB-8000 CI-15 Pin 16 / XP-800 CI-4 Pin 16);
+- Y1 - Connect to MSX PPI 8255 Signal PC1 (HB-8000 CI-15 Pin 15 / XP-800 CI-4 Pin 15);
+- Y0 - Connect to MSX PPI 8255 Signal PC0 (HB-8000 CI-15 Pin 14 / XP-800 CI-4 Pin 14);
+- X7 - Connect to MSX PPI 8255 Signal PB7 (HB-8000 CI-15 Pin 25 / XP-800 CI-4 Pin 25);
+- X6 - Connect to MSX PPI 8255 Signal PB6 (HB-8000 CI-15 Pin 24 / XP-800 CI-4 Pin 24);
+- X5 - Connect to MSX PPI 8255 Signal PB5 (HB-8000 CI-15 Pin 23 / XP-800 CI-4 Pin 23);
+- X4 - Connect to MSX PPI 8255 Signal PB4 (HB-8000 CI-15 Pin 22 / XP-800 CI-4 Pin 22);
+- X3 - Connect to MSX PPI 8255 Signal PB3 (HB-8000 CI-15 Pin 21 / XP-800 CI-4 Pin 21);
+- X2 - Connect to MSX PPI 8255 Signal PB2 (HB-8000 CI-15 Pin 20 / XP-800 CI-4 Pin 20);
+- X1 - Connect to MSX PPI 8255 Signal PB1 (HB-8000 CI-15 Pin 19 / XP-800 CI-4 Pin 19);
+- X0 - Connect to MSX PPI 8255 Signal PB0 (HB-8000 CI-15 Pin 18 / XP-800 CI-4 Pin 18);
+- Caps LED - Connect to MSX PPI 8255 Signal PC6 (HB-8000 CI-15 Pin 11 / XP-800 CI-4 Pin 11);
 - Kana LED - Connect to MSX YM2149 IOB7, pin 6 of DIP package. If the MSX doesn't have this, you can leave it open, as it already has an internal pull-up connection.
 
 3) Serial connection: Needed only to update internal PS/2 to MSX key mapping Database. To create this Intel Hex file, better to use the Macro based Excel file, so you have to trust and enable macro excecution in excel app.
