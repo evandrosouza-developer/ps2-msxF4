@@ -86,7 +86,6 @@ extern bool enable_xon_xoff;											//Declared on serial.c
 
 void database_setup(void)
 {
-	uint8_t flash_buffer_ram[DATABASE_SIZE]; 				//Local variable, in aim to not consume resources in the main functional machine
 	uint8_t ch, str_mount[STRING_MOUNT_BUFFER_SIZE];
 	uint32_t iter;
 	volatile uint32_t*base_of_database32;
@@ -95,52 +94,34 @@ void database_setup(void)
 	bool sector_erased = true;
 	uint16_t attempts_erasing_sector;
 
-	compatible_database = true;
-	
+	void_ptr = &str_mount;
+
 	if (!ps2_keyb_detected)	// The user request to force init Database is done only if there is no keyboard
 	{
 		//The user wants to reset Database to system's defaults
-		//Firstly verify if some character was sent to USART during BAT waiting
-		if (serial_available_get_char() && !ps2_keyb_detected)
+		//Firstly verify if some character was sent to USART or USER_KEY was pressed during BAT waiting
+		if ( serial_available_get_char() || (!gpio_get(USER_KEY_PORT, USER_KEY_PIN_ID))	)
 		{
-			//Clean RX serial buffer
+			//Cleanup RX serial buffer
 			while (serial_available_get_char())
 				ch = serial_get_char();
-			//USER_KEY is exclusive of WeAct board
-			if (!gpio_get(USER_KEY_PORT, USER_KEY_PIN_ID))
+			if (!gpio_get(USER_KEY_PORT, USER_KEY_PIN_ID))	//USER_KEY is exclusive of WeAct board
 			{
 				usart_send_string((uint8_t*)"\r\n\nOk. Now release user key...");
 				while (!gpio_get(USER_KEY_PORT, USER_KEY_PIN_ID))	//But stay here until the button is released
 					__asm("NOP");
 			}
-			usart_send_string((uint8_t*)"\r\nCleanup Database Flash. Press ""&"" to proceed or any other key to abort");
-			//Read a key
+			usart_send_string((uint8_t*)"\r\nReset Database to factory default. Press ""&"" to proceed or any other key to abort");
+			//Wait for user action
 			while (!serial_available_get_char())
 				__asm("nop");
 			ch = serial_get_char();
 			if(ch == '&')
 				cleanupFlash(&sector_erased, &attempts_erasing_sector);
-		}
-		if (!gpio_get(USER_KEY_PORT, USER_KEY_PIN_ID))
-		{
-			//USER_KEY is pressed: Perform Flash clean
-			usart_send_string((uint8_t*)"\r\n\nOk. Now release user key...");
-			while (!gpio_get(USER_KEY_PORT, USER_KEY_PIN_ID))	//But stay here until the button is released
-				__asm("NOP");
-			usart_send_string((uint8_t*)"\r\nCleanup Database Flash. Press ""&"" to proceed or any other key to abort");
-			//Read a key
-			while (!serial_available_get_char())
-				__asm("nop");
-			ch = serial_get_char();
-			if(ch == '&')
-				cleanupFlash(&sector_erased, &attempts_erasing_sector);
-			else
-				usart_send_string((uint8_t*)"\r\n\n");
-
-		}	//if (!gpio_get(USER_KEY_PORT, USER_KEY_PIN_ID))
+		} //if ( serial_available_get_char() || (!gpio_get(USER_KEY_PORT, USER_KEY_PIN_ID))	)
 	}	//if (!ps2_keyb_detected)	// The user request to force init Database is done only if there is no keyboard
 
-	// if INITIAL_DATABASE is unprogrammed
+	// if (INITIAL_DATABASE is unprogrammed)
 	bool empty_database = true;
 	base_of_database32 = (uint32_t *)INITIAL_DATABASE;
 	for(iter = 0; iter < (DATABASE_SIZE / sizeof(uint32_t)); iter++)
@@ -152,11 +133,23 @@ void database_setup(void)
 		}
 	}
 
-	//If it is unprogrammed, fill that area with the contents of DEFAULT_MSX_KEYB_DATABASE_CONVERSION
 	if (empty_database)
 	{
-		//Database is empty. First copy DEFAULT_MSX_KEYB_DATABASE_CONVERSION to RAM
+		//Database is empty. Use DEFAULT_MSX_KEYB_DATABASE_CONVERSION
 		base_of_database8 = (uint8_t*)&DEFAULT_MSX_KEYB_DATABASE_CONVERSION[0][0];
+		usart_send_string((uint8_t*)"..  Database OK at 0x");
+		conv_uint32_to_8a_hex((uintptr_t)(base_of_database8), void_ptr);
+		usart_send_string((uint8_t*)str_mount);
+		usart_send_string((uint8_t*)". Reading system parameters...\r\n");
+		y_dummy 				=  *(base_of_database8 + 3) & 0x0F; //Low nibble (no keys at this column)
+		ps2numlockstate = (*(base_of_database8 + 3) & 0x10) != 0; //Bit 4
+		enable_xon_xoff = (*(base_of_database8 + 3) & 0x20) != 0; //Bit 5
+		update_ps2_leds = true;
+		base_of_database = (uint32_t*)base_of_database8;
+		compatible_database = true;
+		return;
+		/*
+		//Database is empty. Copy DEFAULT_MSX_KEYB_DATABASE_CONVERSION to RAM Buffer
 		for(iter = 0; iter < DATABASE_SIZE; iter ++)
 		{
 				ch = *(base_of_database8 + iter);
@@ -206,7 +199,7 @@ void database_setup(void)
 				return;
 			}
 		} //for (iter = 0; iter < DATABASE_SIZE; iter+=4)	//3K must be checked
-		usart_send_string((uint8_t*)"OK.\r\n\nConsistensy verification: ");
+		usart_send_string((uint8_t*)"OK.\r\n\nConsistensy verification: ");*/
 	}	//if (empty_database)
 
 	//Searching a valid (useful) Database. Unused databases are marked as UNUSED_DATABASE
@@ -247,7 +240,7 @@ void database_setup(void)
 	if( ((*(base_of_database8 + (DATABASE_SIZE - 1))) != checksum)||
 			((*(base_of_database8 + (DATABASE_SIZE - 2))) != bcc)			||
 			 (*(base_of_database8 + 0) 										!= 1) 			||
-			 (*(base_of_database8 + 1) != 0) )
+			 (*(base_of_database8 + 1) 										!= 0) )
 	{
 		void_ptr = &str_mount;
 		//Display bcc
@@ -282,19 +275,20 @@ void database_setup(void)
 		usart_send_string((uint8_t*)".");
 		conv_uint32_to_dec((uint32_t)(*(base_of_database8 + 1)), void_ptr);
 		usart_send_string((uint8_t*)str_mount);
-		usart_send_string((uint8_t*)"\r\n\n!!!Attention!!! => No valid Database found. Please update it!\r\n\n");
-		compatible_database = false;
-		wait_tx_ends();
+		usart_send_string((uint8_t*)"\r\n\n..  !!!Attention!!! => No new valid Database found. Using the factory default one.");
+		base_of_database8 = (uint8_t*)&DEFAULT_MSX_KEYB_DATABASE_CONVERSION[0][0];
+		usart_send_string((uint8_t*)"\r\n\n..  !!!If you want to use a different mapping, please update the Database!!!\r\n\n");
 	}
-	else
-	{
-		usart_send_string((uint8_t*)"..  Database OK. Reading system parameters...\r\n");
-		y_dummy 				=  *(base_of_database8 + 3) & 0x0F; //Low nibble (no keys at this column)
-		ps2numlockstate = (*(base_of_database8 + 3) & 0x10) != 0; //Bit 4
-		enable_xon_xoff = (*(base_of_database8 + 3) & 0x20) != 0; //Bit 5
-		update_ps2_leds = true;
-		base_of_database = (uint32_t*)base_of_database8;
-	}
+	usart_send_string((uint8_t*)"..  Database OK at 0x");
+	conv_uint32_to_8a_hex((uintptr_t)(base_of_database8), void_ptr);
+	usart_send_string((uint8_t*)str_mount);
+	usart_send_string((uint8_t*)". Reading system parameters...\r\n");
+	y_dummy 				=  *(base_of_database8 + 3) & 0x0F; //Low nibble (no keys at this column)
+	ps2numlockstate = (*(base_of_database8 + 3) & 0x10) != 0; //Bit 4
+	enable_xon_xoff = (*(base_of_database8 + 3) & 0x20) != 0; //Bit 5
+	update_ps2_leds = true;
+	base_of_database = (uint32_t*)base_of_database8;
+	compatible_database = true;
 	flash_lock();
 }
 
@@ -473,7 +467,7 @@ redohere:
 		}
 	} //while(iter < str_max_size)
 	// Indicates that we received new line data, and it is going to be shiftingalidated.
-	gpio_toggle(GPIOC, GPIO13);	//Toggle LED each received line
+	gpio_toggle(EMBEDDED_BLUE_LED_PORT, EMBEDDED_BLUE_LED_PIN);	//Toggle LED each received line
 }
 
 
@@ -695,7 +689,7 @@ uint32_t flash_program_data(uint8_t *flash_buffer_ram)	//Local flash_buffer_ram 
 		conv_uint32_to_8a_hex(((uint32_t)INITIAL_DATABASE - displacement), void_ptr);
 		usart_send_string((uint8_t*)" 0x");
 		usart_send_string((uint8_t*)str_mount);
-		usart_send_string((uint8_t*)"    ");
+		usart_send_string((uint8_t*)"   ");
 		conv_uint32_to_dec((uint32_t)DATABASE_SIZE, void_ptr);
 		usart_send_string((uint8_t*)str_mount);
 
@@ -736,7 +730,7 @@ uint32_t flash_program_data(uint8_t *flash_buffer_ram)	//Local flash_buffer_ram 
 	conv_uint32_to_8a_hex(((uint32_t)base_of_database_num), void_ptr);
 	usart_send_string((uint8_t*)" 0x");
 	usart_send_string((uint8_t*)str_mount);
-	usart_send_string((uint8_t*)"  ");
+	usart_send_string((uint8_t*)"   ");
 	conv_uint32_to_dec((uint32_t)DATABASE_SIZE, void_ptr);
 	usart_send_string((uint8_t*)str_mount);
 	usart_send_string((uint8_t*)"  0x");
@@ -855,8 +849,8 @@ int flashF4_rw(void)	//was main. It is int to allow simulate as a single module
 	uint8_t flash_buffer_ram[DATABASE_SIZE]; //Local variable, in aim to not consume resources in the main functional machine
 	void *ptr_flash_buffer_ram;
 
-	usart_send_string((uint8_t*)"It is ready to update the Database! To do so, now\r\n");
-	usart_send_string((uint8_t*)"please send the new Database file in Intel Hex format!");
+	usart_send_string((uint8_t*)"Ready to update the Database! To do so now, please\r\n");
+	usart_send_string((uint8_t*)"send the new Database file in Intel Hex format!");
 	usart_send_string((uint8_t*)"\r\n\nOr turn off now...");
 	get_valid_intelhex_file(&str_mount[0], STRING_MOUNT_BUFFER_SIZE, &flash_buffer_ram[0]);
 	

@@ -92,10 +92,10 @@ The structure of the Database is:
 	
 ## Download the code to the board
 
-STM32F4x1 MiniF4 has a DFU (Device Firmware Upgrade) to download code, so you don't need ST-Link, J-link or Black Magic Probe to download your code, so, on linux, just follow these steps:
-1) install dfu-util: 
+STM32F4x1 MiniF4 already comes with DFU (Device Firmware Upgrade) available in the system ROM to download code, so you don't need ST-Link, J-link or Black Magic Probe to download your code, so, on linux, just follow these steps:
+1) Install dfu-util. This example is for Debian like Linux (Debian, Ubuntu, Mint, etc):
 `sudo apt install dfu-util`
-2) make .bin, as dfu-util is not compatible with .elf: 
+2) Make the .bin file, as dfu-util is not compatible with .elf: 
 `arm-none-eabi-objcopy -Obinary ps2-msxF4.elf ps2-msxF4.bin`
 3) Make sure the chip is at least 25°C (you may let it working for a while);
 4) Plug the USB cable to your computer and the STM32F4 board while holding both NRST and BOOT0;
