@@ -38,7 +38,7 @@ void time_capture(void);
 void (*next_routine) (void);
 
 
-void tim2_setup(void)
+void tim_setup(uint32_t timer_peripheral)
 {
 	//Used to receive PS/2 Clock interrupt
 
@@ -51,18 +51,18 @@ void tim2_setup(void)
 	//PS/2 Clock interrupt
 	// Enable TIM2 interrupt.
 	nvic_enable_irq(NVIC_TIM2_IRQ);
-	nvic_set_priority(NVIC_TIM2_IRQ, 11);
+	nvic_set_priority(NVIC_TIM2_IRQ, IRQ_PRI_TIM);
 
 	//Configuring PA15 as input and Alternate function of T2C1
 	//gpio_mode_setup(PS2_CLOCK_PIN_PORT, GPIO_MODE_INPUT, GPIO_PUPD_PULLUP, PS2_CLOCK_PIN_ID);	//Default config
-	gpio_set_af(PS2_CLOCK_PIN_PORT, GPIO_AF1, PS2_CLOCK_PIN_ID);
+	//gpio_set_af(PS2_CLOCK_PIN_PORT, GPIO_AF1, PS2_CLOCK_PIN_ID);
 
 	/* Timer global mode:
-	 * - Prescaler = 72 (Prescler module=71)
+	 * - Prescaler = 84 (Prescler module=83)
 	 * - Counter Enable
 	 * - Direction up
 	 */
-	timer_set_mode(TIM2, TIM_CR1_CKD_CK_INT, TIM_CR1_CEN, TIM_CR1_DIR_UP);
+	timer_set_mode(timer_peripheral, TIM_CR1_CKD_CK_INT, TIM_CR1_CEN, TIM_CR1_DIR_UP);
 
 	/*
 	 * Please take note that the clock source for STM32 timers
@@ -70,14 +70,14 @@ void tim2_setup(void)
 	 * are doubled.  See the Reference Manual for full details!
 	 * In our case, TIM2 on APB1 is running at double frequency
 	 */
-	timer_set_prescaler(TIM2, ((rcc_apb2_frequency * 2) / 1000000) - 1);
+	timer_set_prescaler(timer_peripheral, ((rcc_apb2_frequency * 2) / 1000000) - 1);
 
 	// count full range
-	timer_set_period(TIM2, 0xFFFFFFFF);
-	//TIM_ARR(TIM2) = 0xFFFFFFFF;
+	timer_set_period(timer_peripheral, 0xFFFFFFFF);
+	//TIM_ARR(timer_peripheral) = 0xFFFFFFFF;
 
 	// Enable preload.
-	timer_enable_preload(TIM2);
+	timer_enable_preload(timer_peripheral);
 
 	/*
 	TIM2_Update_Cnt = 0;
@@ -117,19 +117,19 @@ void tim2_setup(void)
 	TIM_CCMR1(TIM2) &= (TIM_CCMR1_IC1F_OFF | 0b11110011); //No prescaler and no filter, sampling is done at fDTS
 	*/
 
-	//Here there is no TIM2 run and/or interrupts enabled
-	prepares_capture(TIM2);
+	//Here there is no timer_peripheral run and/or interrupts enabled
+	prepares_capture(timer_peripheral);
 }
 
 
 //void delay_usec(uint16_t usec, int16_t next_state)
-void delay_usec(uint16_t usec, void next_step (void))
+void delay_usec(uint32_t timer_peripheral, uint16_t usec, void next_step (void))
 {
 	//Here we init TIM2 to a single shot,
 	//and have an interrupt at the counting overflow
 
 	// Counter disable
-	TIM_CR1(TIM2) &= ~TIM_CR1_CEN;
+	TIM_CR1(timer_peripheral) &= ~TIM_CR1_CEN;
 
 	//Disable capture from the counter into the capture register by setting the CC1E bit in the TIMx_CCER register.
 	//Bit 0 CC1E: Capture/Compare 1 configured as input:
@@ -137,7 +137,7 @@ void delay_usec(uint16_t usec, void next_step (void))
 	//capture/compare register 1 (TIMx_CCR1) or not.
 	//0: Capture disabled.
 	//1: Capture enabled.
-	TIM_CCER(TIM2) &= ~TIM_CCER_CC1E;
+	TIM_CCER(timer_peripheral) &= ~TIM_CCER_CC1E;
 
 	// Bit 2 URS: Update request source
 	// This bit is set and cleared by software to select the UEV event sources.
@@ -147,7 +147,7 @@ void delay_usec(uint16_t usec, void next_step (void))
 	// – Setting the UG bit
 	// – Update generation through the slave mode controller
 	// 1: Only counter overflow/underflow generates an update interrupt or DMA request if enabled.	
-	TIM_CR1(TIM2) |= TIM_CR1_URS;
+	TIM_CR1(timer_peripheral) |= TIM_CR1_URS;
 
 	//Now clear timer through set UG:
 	//Generate a UEV (UG bit in the TIMx_EGR register)
@@ -158,30 +158,33 @@ void delay_usec(uint16_t usec, void next_step (void))
 	//counter is cleared too (anyway the prescaler ratio is not affected). The counter is cleared if
 	//the center-aligned mode is selected or if DIR=0 (upcounting), else it takes the auto-reload
 	//value (TIMx_ARR) if DIR=1 (downcounting).
-	TIM_EGR(TIM2) |= TIM_EGR_UG;
+	TIM_EGR(timer_peripheral) |= TIM_EGR_UG;
 	// Clear timer Update Interrupt Flag after set UG (Update Generation)
 	//timer_clear_flag(TIM2, TIM_SR_UIF);
-	TIM_SR(TIM2) &= ~TIM_SR_UIF;
+	TIM_SR(timer_peripheral) &= ~TIM_SR_UIF;
 
 	//timer_set_period(TIM2, 0xFFFFFFFF-usec-1);
-	TIM_CNT(TIM2) = 0xFFFFFFFF + 1 - usec;
+	TIM_CNT(timer_peripheral) = 0xFFFFFFFF + 1 - usec;
 
 	next_routine = next_step;
 
 	//Enables OPM (One Pulse Mode)
-	TIM_CR1(TIM2) |= TIM_CR1_OPM;
+	TIM_CR1(timer_peripheral) |= TIM_CR1_OPM;
 
 	// Counter enable
 	//timer_enable_counter(TIM2);
-	TIM_CR1(TIM2) |= TIM_CR1_CEN;
+	TIM_CR1(timer_peripheral) |= TIM_CR1_CEN;
 
 	//timer_enable_irq(TIM2, TIM_DIER_UIE);
-	TIM_DIER(TIM2) |= TIM_DIER_UIE;
+	TIM_DIER(timer_peripheral) |= TIM_DIER_UIE;
 }
 
 
 void prepares_capture(uint32_t timer_peripheral)
 {
+	TIM_CR2(timer_peripheral) &= ~TIM_CR2_TI1S;
+	TIM_CR2(timer_peripheral) = 0;
+
 	// Dummy read the Input Capture value (to clear CC1IF flag)
 	TIM_CCR1(timer_peripheral);
 	//Clear TIM2 Capture compare interrupt pending bit

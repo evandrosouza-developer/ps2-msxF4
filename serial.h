@@ -21,10 +21,21 @@ void ring_init(struct ring *ring, uint8_t *buf);
 //Setup serial subsystem
 void serial_setup(void);
 
+//Returns the number of chars available in the ring (both TX and RX) or 0 if none.
+uint16_t ring_avail_get_ch(struct ring*);
+
+//It returns char when it is available or 0xFFFF when no one is available
+//Used on both TX and RX buffers.
+uint16_t ring_get_ch(struct ring *ring, uint16_t *qty_in_buffer);
+
+//It returns char when it is available or -1 when no one is available
+//Used only on RX buffer.
+uint8_t ring_rx_get_ch(void);
+
 // Put a char (uint8_t) on serial buffer.
 // It returns true if there was room to put this on USART TX buffer.
 // It is a non blocking function
-uint16_t ring_put_ch(struct ring *ring, uint8_t ch);
+uint16_t ring_put_ch(struct ring*, uint8_t ch);
 
 // Put a char (uint8_t) on serial buffer.
 // It returns the number of chars, or 0 (zero) if there was no room to put this on USART TX buffer.
@@ -41,10 +52,10 @@ uint8_t serial_get_char(void);
 
 // Send a ASCIIZ string to serial (up to 127 chars).
 // It is a non blocking function if there is room on TX Buffer
-void usart_send_string(uint8_t*);
+void serial_send_string(uint8_t*);
 
 //Wait until the transmission is concluded
-void wait_tx_ends(void);
+void serial_wait_tx_ends(void);
 
 /*Functions to convert strings*/
 // Convert a two byte string pointed by i into a binary byte. 

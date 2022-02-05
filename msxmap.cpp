@@ -12,21 +12,27 @@
 
 //Use Tab width=2
 
-#define MAX_LINHAS_VARRIDAS								320	//To acommodate maximum size of 3200 (320 lines of 10 bytes each - header included)
-#define MAX_TIME_OF_IDLE_KEYSCAN_SYSTICKS	5		//30 / 5 = 6 times per second is the maximum sweep speed
+#define MAX_TIME_OF_IDLE_KEYSCAN_SYSTICKS	3		//30 / 3 = 10 times per second is the maximum sweep speed
 #define	NIBBLE														4
-#define	CASE0_KEY0												4
-#define	CASE0_KEY1												5
-#define	CASE1_KEY0												6
-#define	CASE1_KEY1												7
-#define	CASE2_KEY0												8
-#define	CASE2_KEY1												9
+#define	CASE_MASK													0x03
+#define	CASEx_TYPE												3		//Relative position within a line of Case type
+#define	CASE0_KEY0												4		//Relative position within a line of first key of case 0
+#define	CASE0_KEY1												5		//   "         "       "   "   "  " second  "  "  case 0
+#define	CASE1_KEY0												6		//   "         "       "   "   "  "  first  "  "  case 1
+#define	CASE1_KEY1												7		//   "         "       "   "   "  " second  "  "  case 1
+#define	CASE2_KEY0												6		//Cases 1 and 2 share the same database positions as they don't overlap
+#define	CASE2_KEY1												7		//Cases 1 and 2 share the same database positions as they don't overlap
 #define X_POLARITY_BIT_POSITION						3
 #define X_POLARITY_BIT_MASK								(1 << X_POLARITY_BIT_POSITION) //8
 #define	Y_LOCAL_MASK											0xF0//Mask of Y on press/release command byte
 #define	X_LOCAL_MASK											7		//Mask of X on press/release command byte
 #define	Y_SHIFT														6		//Shift colunm
 #define	X_SHIFT														0		//Shift line
+#define	MSX_SHIFT_PRESS										(Y_SHIFT<<NIBBLE)|X_SHIFT//Shift press will be resolved as 0x60
+#define	Y_GRAPH														6		//Graph colunm
+#define	X_GRAPH														2		//Graph line
+#define	Y_CTRL														6		//CTRL colunm
+#define	X_CTRL														1		//CTRL line
 #define	Y_STOP														7		//Stop key colunm
 #define	X_STOP														4		//Stop key line
 
@@ -34,9 +40,10 @@
 uint8_t* base_of_database;
 extern uint32_t systicks;											//Declared on sys_timer.cpp
 extern bool ps2numlockstate;									//Declared on ps2handl.c
+bool do_next_keep_alive;
 volatile bool shiftstate;
 volatile uint16_t linhavarrida;
-volatile bool update_ps2_leds;
+extern volatile bool update_ps2_leds;					//Declared on ps2handl.c
 //Place to store previous time for each Y last scan
 volatile uint32_t previous_y_systick[ 16 ] = {0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0 };
 
@@ -49,11 +56,11 @@ volatile uint8_t scancode[4];									//scancode[0] stores the quantity of bytes
 
 uint8_t CtrlAltDel;
 //First record of unused V.1.0 Database
-uint8_t UNUSED_DATABASE[(uint8_t)DB_NUM_COLS] = {0x00, 0x00, 0x00, 0x00, 0x01, 0x02, 0x04, 0x08, 0x10, 0x20};
+uint8_t UNUSED_DATABASE[(uint8_t)DB_NUM_COLS] = {0x00, 0x00, 0x00, 0x00, 0x01, 0x02, 0x04, 0x08};
 
 extern bool enable_xon_xoff;									//Declared on serial.c
 
-#define DISPATCH_QUEUE_SIZE							16
+#define DISPATCH_QUEUE_SIZE								16
 uint8_t dispatch_keys_queue_buffer[DISPATCH_QUEUE_SIZE];
 
 struct ring dispatch_keys_queue;
@@ -89,7 +96,7 @@ void msxmap::msx_interface_setup(void)
 	
 	// Initialize dispatch_keys_queue ringbuffer
 	ring_init(&dispatch_keys_queue, dispatch_keys_queue_buffer);
-	for(uint8_t i=0; i<DISPATCH_QUEUE_SIZE; ++i)
+	for(uint16_t i=0; i<DISPATCH_QUEUE_SIZE; ++i)
 		dispatch_keys_queue.data[i]=0;
 
 	// GPIO pins for MSX keyboard Y scan (PC3:0 of the MSX 8255 - PC3 MSX 8255 Pin 17)
@@ -133,23 +140,23 @@ void msxmap::msx_interface_setup(void)
 	// Set both to input and enable internal pullup
 
 	// CAPS_LED
-	gpio_mode_setup(CAPSLOCK_port, GPIO_MODE_INPUT, GPIO_PUPD_PULLUP, CAPSLOCK_pin_id); // CAP_LED (MSX 8255 Pin 11)
-	gpio_set(CAPSLOCK_port, CAPSLOCK_pin_id); //pull up resistor
-	gpio_port_config_lock(CAPSLOCK_port, CAPSLOCK_pin_id);
+	gpio_mode_setup(CAPSLOCK_PORT, GPIO_MODE_INPUT, GPIO_PUPD_PULLUP, CAPSLOCK_PIN_ID); // CAP_LED (MSX 8255 Pin 11)
+	gpio_set(CAPSLOCK_PORT, CAPSLOCK_PIN_ID); //pull up resistor
+	gpio_port_config_lock(CAPSLOCK_PORT, CAPSLOCK_PIN_ID);
 
 	// Kana LED
-	gpio_mode_setup(KANA_port, GPIO_MODE_INPUT, GPIO_PUPD_PULLUP, KANA_pin_id); // KANA_LED - Mapeado para Scroll Lock
-	gpio_set(KANA_port, KANA_pin_id); //pull up resistor
-	gpio_port_config_lock(KANA_port, KANA_pin_id);
+	gpio_mode_setup(KANA_PORT, GPIO_MODE_INPUT, GPIO_PUPD_PULLUP, KANA_PIN_ID); // KANA_LED - Mapeado para Scroll Lock
+	gpio_set(KANA_PORT, KANA_PIN_ID); //pull up resistor
+	gpio_port_config_lock(KANA_PORT, KANA_PIN_ID);
 
 	// Enable EXTI9_5 interrupt. (for Y - bits 3 to 0)
 	nvic_enable_irq(NVIC_EXTI9_5_IRQ);
 
 	//Highest priority to avoid interrupt Y scan loss
-	nvic_set_priority(NVIC_EXTI9_5_IRQ, 10); 		//Y3 to Y0
+	nvic_set_priority(NVIC_EXTI9_5_IRQ, IRQ_PRI_Y_SCAN); 		//Y3 to Y0
 
-	//Workarround here to stop watchdog counters during halt
-	DBGMCU_APB1_FZ = DBG_IWDG_STOP | DBG_WWDG_STOP | DBG_TIM2_STOP;
+	//Workaround here to stop iwdg, wwdg and TIM4 counters during halt
+	DBGMCU_APB1_FZ = DBG_IWDG_STOP | DBG_WWDG_STOP | DBG_TIM4_STOP;
 }
 
 
@@ -259,15 +266,9 @@ void msxmap::convert2msx()
 			(scancode[1] == (uint8_t)0x71) ) //Num pad Del
 			{
 				//Left Control + Left Alt + Num Pad Del are pressed together
-				power_off_ps2_keyboard();
 				//User messages
-				usart_send_string((uint8_t*)"Reset requested\r\n");
-				//Wait here .3 second to consolidate this power off
-				uint32_t readsysticks = systicks;
-				//wait 1/3 second
-				while (systicks <= (readsysticks + 10)) __asm("nop");
-				systick_interrupt_disable();
-				for(;;) {};//Wait here until reset
+				serial_send_string((uint8_t*)"Reset requested by user\r\n");
+				reset_requested();
 			}
 			else
 				CtrlAltDel = 0;
@@ -284,6 +285,15 @@ void msxmap::convert2msx()
 		return;
 	}
 
+	/*if (
+	(scancode[0] == (uint8_t)2) 		&&
+	(scancode[1] == (uint8_t)0xF0)	&&
+	(scancode[2] == (uint8_t)0x77) )
+	{
+		//NumLock Released. Return with no action
+		return;
+	}
+	*/
 	if (
 	( scancode[0] == (uint8_t)1)	  &&
 	((scancode[1] == (uint8_t)0x12) || (scancode[1] == (uint8_t)0x59)) )
@@ -299,6 +309,42 @@ void msxmap::convert2msx()
 	{
 		//Shift Released (Break code).
 		shiftstate = false;
+	}
+
+	if (	//on release of Shift, Ctrl, Graph or Code, release all presses
+	//Check PS/2 Shift released
+	((scancode[0] == (uint8_t)2)		&&
+	( scancode[1] == (uint8_t)0xF0) &&
+	((scancode[2] == (uint8_t)0x12) || (scancode[2]== (uint8_t)0x59)))	||
+	//Check PS/2 Windows key (GRAPH) released
+	((scancode[0] == (uint8_t)3)		&&
+	( scancode[1] == (uint8_t)0xE0) &&
+	( scancode[2] == (uint8_t)0xF0) &&
+	((scancode[3] == (uint8_t)0x1F) || (scancode[3]== (uint8_t)0x27)))	||
+	//Check PS/2 left Ctrl key released
+	((scancode[0] == (uint8_t)2)		&&
+	( scancode[1] == (uint8_t)0xF0) &&
+	((scancode[2] == (uint8_t)0x14)))																			||
+	//Check PS/2 right Ctrl key released
+	((scancode[0] == (uint8_t)3)		&&
+	( scancode[1] == (uint8_t)0xE0) &&
+	( scancode[2] == (uint8_t)0xF0) &&
+	( scancode[3] == (uint8_t)0x14))																		||
+	//Check PS/2 left Alt key (CODE) released
+	((scancode[0] == (uint8_t)2)		&&
+	( scancode[1] == (uint8_t)0xF0) &&
+	(	scancode[2] == (uint8_t)0x11))																		||
+	//Check PS/2 right Alt key (CODE) released
+	((scancode[0] == (uint8_t)3)		&&
+	( scancode[1] == (uint8_t)0xE0) &&
+	( scancode[2] == (uint8_t)0xF0) &&
+	(	scancode[3] == (uint8_t)0x11))
+		 )
+	{
+		//Shift and/or Graph and/or Control and/or Code were/was released, then force release of all other keys
+		for(uint8_t i = 0; i < 16; i++)
+			x_bits[ i ] = X7_SET_OR | X6_SET_OR | X5_SET_OR | X4_SET_OR | X3_SET_OR | X2_SET_OR | X1_SET_OR | X0_SET_OR;
+		return;
 	}
 
 	if (
@@ -319,19 +365,19 @@ void msxmap::convert2msx()
 		return;
 	}
 
-	//Now searches for PS/2 scan code in MSX Table to match. First search first colunm
+	//Now searches for PS/2 scan code in Database to match. First search first colunm
 	linhavarrida = 1;
 	while ( 
 	//(MSX_KEYB_DATABASE_CONVERSION[linhavarrida][0] != scancode[1]) &&
 	(*(base_of_database+linhavarrida*DB_NUM_COLS+0) != scancode[1]) &&
-	(linhavarrida < MAX_LINHAS_VARRIDAS) )
+	(linhavarrida < N_DATABASE_REGISTERS) )
 	{
 		linhavarrida++;
 	}
 	if (
 	(scancode[0] == (uint8_t)1) && 
 	(scancode[1]  == *(base_of_database+linhavarrida*DB_NUM_COLS+0)) && 
-	(linhavarrida < MAX_LINHAS_VARRIDAS) )
+	(linhavarrida < N_DATABASE_REGISTERS) )
 	{
 		//1 byte key
 		//msx_dispatch(linhavarrida);
@@ -339,12 +385,12 @@ void msxmap::convert2msx()
 		return;
 	}
 	if ((scancode[0] >= (uint8_t)1) &&
-	(linhavarrida < MAX_LINHAS_VARRIDAS) )
+	(linhavarrida < N_DATABASE_REGISTERS) )
 	{
 		//2 bytes key, then now search match on second byte of scancode
 		while ( 
 		(*(base_of_database+linhavarrida*DB_NUM_COLS+1) != scancode[2]) &&
-		(linhavarrida < MAX_LINHAS_VARRIDAS))
+		(linhavarrida < N_DATABASE_REGISTERS))
 		{
 			linhavarrida++;
 		}
@@ -361,7 +407,7 @@ void msxmap::convert2msx()
 		//3 bytes key, then now search match on third byte of scancode
 		while (
 		(*(base_of_database+linhavarrida*DB_NUM_COLS+2) != scancode[3]) &&
-		(linhavarrida < MAX_LINHAS_VARRIDAS) )
+		(linhavarrida < N_DATABASE_REGISTERS) )
 		{
 			linhavarrida++;
 		}
@@ -376,7 +422,7 @@ void msxmap::convert2msx()
 			msx_dispatch();
 			return;
 		}
-	}	//if ((scancode[0] >= (uint8_t)1) && (linhavarrida < MAX_LINHAS_VARRIDAS) )
+	}	//if ((scancode[0] >= (uint8_t)1) && (linhavarrida < N_DATABASE_REGISTERS) )
 }	//void msxmap::convert2msx()
 
 	/*
@@ -453,15 +499,13 @@ void msxmap::msx_dispatch(void)
 	volatile uint8_t y_local, x_local;
 	volatile bool x_local_setb;
 
-	//Which is the mapping type?
-	
-	switch(*(base_of_database+linhavarrida*DB_NUM_COLS+3) & 0x03)
+ 	switch(*(base_of_database+linhavarrida*DB_NUM_COLS+CASEx_TYPE) & CASE_MASK)
 	{
 		case 0:
-		{	// .0 - Mapeamento default (Colunas 4 e 5)
+		{	// .0 - Default mapping (Columns 4 & 5)
 			// Key 0:
 			y_local = (*(base_of_database+linhavarrida*DB_NUM_COLS+CASE0_KEY0) & (uint8_t)Y_LOCAL_MASK) >> NIBBLE;
-			// Verifica se está mapeada
+			// Verify if key is mapped
 			if (y_local != y_dummy)
 			{
 				x_local = *(base_of_database+linhavarrida*DB_NUM_COLS+CASE0_KEY0) & (uint8_t)X_LOCAL_MASK;
@@ -469,34 +513,26 @@ void msxmap::msx_dispatch(void)
 				// Calcula x_bits da Key 0 e verifica se o tempo em que foi atualizado o dado de Linha X da Coluna Y,
 				// com a finalidade de atualizar teclas mesmo sem o PPI ser atualizado. 
 				compute_x_bits_and_check_interrupt_stuck(y_local, x_local, x_local_setb);
-				//Verify if break
-				if( (y_local == 7) && (x_local == 4) )
-				{
-					put_msx_disp_keys_queue_buffer(*(base_of_database+linhavarrida*DB_NUM_COLS+CASE0_KEY0));
-					put_msx_disp_keys_queue_buffer(*(base_of_database+linhavarrida*DB_NUM_COLS+CASE0_KEY0));
-					put_msx_disp_keys_queue_buffer(*(base_of_database+linhavarrida*DB_NUM_COLS+CASE0_KEY0) ||
-																					((uint8_t)X_POLARITY_BIT_MASK));
-				}
 			}
 			// Key 1:
 			y_local = (*(base_of_database+linhavarrida*DB_NUM_COLS+CASE0_KEY1) & (uint8_t)Y_LOCAL_MASK) >> NIBBLE;
-			// Verifica se está mapeada
+			// Verify if key is mapped
 			if (y_local != y_dummy)
 			{
 				x_local = *(base_of_database+linhavarrida*DB_NUM_COLS+CASE0_KEY1) & (uint8_t)X_LOCAL_MASK;
-				if( (Y_SHIFT == y_local) && (X_SHIFT == x_local) )	//if SHIFT, return to shiftstate
+				if( ((*(base_of_database+linhavarrida*DB_NUM_COLS+CASE0_KEY1)) & ~(uint8_t)X_POLARITY_BIT_MASK) == (MSX_SHIFT_PRESS))
 				{
 					//Shift key
 					if(shiftstate)
-						put_msx_disp_keys_queue_buffer(Y_SHIFT<<NIBBLE | X_SHIFT);	//return MSX Shift key as pressed state
+						put_msx_disp_keys_queue_buffer(MSX_SHIFT_PRESS);	//return MSX Shift key as pressed state
 					else
-						put_msx_disp_keys_queue_buffer(Y_SHIFT<<NIBBLE | X_POLARITY_BIT_MASK | X_SHIFT);	//return MSX Shift key as released state
-				}	//if( (Y_SHIFT == y_local) && (X_SHIFT == x_local) )
-				else // if( (Y_SHIFT == y_local) && (X_SHIFT = x_local) )
+						put_msx_disp_keys_queue_buffer(MSX_SHIFT_PRESS | X_POLARITY_BIT_MASK);	//return MSX Shift key as released state
+				}	//	if( ((*(base_of_database+linhavarrida*DB_NUM_COLS+CASE0_KEY1)) & ~(uint8_t)X_POLARITY_BIT_MASK) == MSX_SHIFT_PRESS)
+				else // if( ((*(base_of_database+linhavarrida*DB_NUM_COLS+CASE0_KEY1)) & ~(uint8_t)X_POLARITY_BIT_MASK) == MSX_SHIFT_PRESS)
 				{
-					//No Shift key
+					//Other key: different from Shift key
 					put_msx_disp_keys_queue_buffer(*(base_of_database+linhavarrida*DB_NUM_COLS+CASE0_KEY1));
-				}	//else // if( (Y_SHIFT == y_local) && (X_SHIFT == x_local) )
+				}	//else // if( ((*(base_of_database+linhavarrida*DB_NUM_COLS+CASE0_KEY1)) & ~(uint8_t)X_POLARITY_BIT_MASK) == MSX_SHIFT_PRESS)
 			}	//if (y_local != y_dummy)
 			break;
 		} // .0 - Mapeamento default (Colunas 4 e 5)
@@ -508,7 +544,7 @@ void msxmap::msx_dispatch(void)
 				//numlock and Shift have different status
 				// Key 0 (PS/2 NumLock ON (Default)):
 				y_local = (*(base_of_database+linhavarrida*DB_NUM_COLS+CASE0_KEY0) & (uint8_t)Y_LOCAL_MASK)  >> NIBBLE;
-				// Verifica se está mapeada
+				// Verify if key is mapped
 				if (y_local != y_dummy)
 				{
 					x_local = *(base_of_database+linhavarrida*DB_NUM_COLS+CASE0_KEY0) & (uint8_t)X_LOCAL_MASK;
@@ -517,7 +553,7 @@ void msxmap::msx_dispatch(void)
 				}
 				// Key 1 (PS/2 NumLock ON (Default)):
 				y_local = (*(base_of_database+linhavarrida*DB_NUM_COLS+CASE0_KEY1) & (uint8_t)Y_LOCAL_MASK) >> NIBBLE;
-				// Verifica se está mapeada
+				// Verify if key is mapped
 				if (y_local != y_dummy)
 				{
 					x_local = *(base_of_database+linhavarrida*DB_NUM_COLS+CASE0_KEY1) & (uint8_t)X_LOCAL_MASK;
@@ -525,24 +561,24 @@ void msxmap::msx_dispatch(void)
 					{
 						//Shift key
 						if(shiftstate)
-							put_msx_disp_keys_queue_buffer(Y_SHIFT<<NIBBLE | X_SHIFT);	//return MSX Shift key as pressed state
+							put_msx_disp_keys_queue_buffer(MSX_SHIFT_PRESS);	//return MSX Shift key as pressed state
 						else
-							put_msx_disp_keys_queue_buffer(Y_SHIFT<<NIBBLE | X_POLARITY_BIT_MASK | X_SHIFT);	//return MSX Shift key as released state
+							put_msx_disp_keys_queue_buffer(MSX_SHIFT_PRESS | X_POLARITY_BIT_MASK);	//return MSX Shift key as released state
 					}	//if( (Y_SHIFT == y_local) && (X_SHIFT == x_local) )
 					else // if( (Y_SHIFT == y_local) && (X_SHIFT == x_local) )
 					{
-						//No Shift key
+						//Other key: different from Shift key
 						put_msx_disp_keys_queue_buffer(*(base_of_database+linhavarrida*DB_NUM_COLS+CASE0_KEY1));
 					}	//else // if( (Y_SHIFT == y_local) && (X_SHIFT == x_local) )
 				}	//if (y_local != y_dummy)
 			}
 			else //if (ps2numlockstate ^ shiftstate)
 			{
-				//numlock e Shift tem mesmo estado
-				// Verifica se ha teclas mapeadas
+				//numlock and Shift share the same status
+				// Verify if there are keys mapped
 				// Key 0 (PS/2 NumLock OFF):
 				y_local = (*(base_of_database+linhavarrida*DB_NUM_COLS+CASE1_KEY0) & (uint8_t)Y_LOCAL_MASK)  >> NIBBLE;
-				// Verifica se está mapeada
+				// Verify if key is mapped
 				if (y_local != y_dummy)
 				{
 					x_local = *(base_of_database+linhavarrida*DB_NUM_COLS+CASE1_KEY0) & (uint8_t)X_LOCAL_MASK;
@@ -550,27 +586,26 @@ void msxmap::msx_dispatch(void)
 					// Calcula x_bits da Key 0 e verifica se o tempo em que foi atualizado o dado de Linha X da Coluna Y,
 					// com a finalidade de atualizar teclas mesmo sem o PPI ser atualizado. 
 					compute_x_bits_and_check_interrupt_stuck(y_local, x_local, x_local_setb);
-				}
+				}	//if (y_local != y_dummy)
 				// Key 1 (PS/2 NumLock OFF):
 				y_local = (*(base_of_database+linhavarrida*DB_NUM_COLS+CASE1_KEY1) & (uint8_t)Y_LOCAL_MASK) >> NIBBLE;
-				// Verifica se está mapeada
+				// Verify if key is mapped
 				if (y_local != y_dummy)
 				{
-					x_local = *(base_of_database+linhavarrida*DB_NUM_COLS+CASE1_KEY1) & (uint8_t)X_LOCAL_MASK;
-					if( (Y_SHIFT == y_local) && (X_SHIFT == x_local) )
+					if( ((*(base_of_database+linhavarrida*DB_NUM_COLS+CASE1_KEY1)) & ~(uint8_t)X_POLARITY_BIT_MASK) == (MSX_SHIFT_PRESS))
 					{
 						//Shift key
 						if(shiftstate)
-							put_msx_disp_keys_queue_buffer(Y_SHIFT<<NIBBLE | X_SHIFT);	//return MSX Shift key as pressed state
+							put_msx_disp_keys_queue_buffer(MSX_SHIFT_PRESS);	//return MSX Shift key as pressed state
 						else
-							put_msx_disp_keys_queue_buffer(Y_SHIFT<<NIBBLE | X_POLARITY_BIT_MASK | X_SHIFT);	//return MSX Shift key as released state
-					}	//if( (Y_SHIFT == y_local) && (X_SHIFT == x_local) )
-					else // if( (Y_SHIFT == y_local) && (X_SHIFT == x_local) )
+							put_msx_disp_keys_queue_buffer(MSX_SHIFT_PRESS | X_POLARITY_BIT_MASK);	//return MSX Shift key as released state
+					}	//if( ((*(base_of_database+linhavarrida*DB_NUM_COLS+CASE1_KEY1)) & ~(uint8_t)X_POLARITY_BIT_MASK) == MSX_SHIFT_PRESS)
+					else // if( ((*(base_of_database+linhavarrida*DB_NUM_COLS+CASE1_KEY1)) & ~(uint8_t)X_POLARITY_BIT_MASK) == MSX_SHIFT_PRESS)
 					{
-						//No Shift key
+						//Other key: different from Shift key
 						put_msx_disp_keys_queue_buffer(*(base_of_database+linhavarrida*DB_NUM_COLS+CASE1_KEY1));
-					}	//else // if( (Y_SHIFT == y_local) && (X_SHIFT == x_local) )
-				}
+					}	//else // if( ((*(base_of_database+linhavarrida*DB_NUM_COLS+CASE1_KEY1)) & ~(uint8_t)X_POLARITY_BIT_MASK) == MSX_SHIFT_PRESS)
+				}	//if (y_local != y_dummy)
 			} //if (ps2numlockstate ^ shiftstate)
 			break;
 		}  // .1 - Mapeamento NumLock (Colunas 6 e 7)
@@ -579,10 +614,10 @@ void msxmap::msx_dispatch(void)
 		{	// .2 - Mapeamento alternativo (PS/2 Left and Right Shift)  (Colunas 8 e 9)
 			if (!shiftstate)
 			{
+				//Shift state is OFF (not pressed), so performs as CASE 0 (see the displacement CASE0_KEY...)
 				// Key 0 (PS/2 NumLock ON (Default)):
 				y_local = (*(base_of_database+linhavarrida*DB_NUM_COLS+CASE0_KEY0) & (uint8_t)Y_LOCAL_MASK)  >> NIBBLE;
-				// Verifica se está mapeada
-				if (y_local != y_dummy)
+				if (y_local != y_dummy)	// Verify if key is mapped
 				{
 					x_local = *(base_of_database+linhavarrida*DB_NUM_COLS+CASE0_KEY0) & (uint8_t)X_LOCAL_MASK;
 					x_local_setb = (*(base_of_database+linhavarrida*DB_NUM_COLS+CASE0_KEY0) & (uint8_t)X_POLARITY_BIT_MASK) >> X_POLARITY_BIT_POSITION;
@@ -592,61 +627,82 @@ void msxmap::msx_dispatch(void)
 				}
 				// Key 1 (PS/2 NumLock ON (Default)):
 				y_local = (*(base_of_database+linhavarrida*DB_NUM_COLS+CASE0_KEY1) & (uint8_t)Y_LOCAL_MASK) >> NIBBLE;
-				// Verifica se está mapeada
-				if (y_local != y_dummy)
+				if (y_local != y_dummy)	// Verify if key is mapped
 				{
-					put_msx_disp_keys_queue_buffer(*(base_of_database+linhavarrida*DB_NUM_COLS+CASE0_KEY1));
-				}
+					x_local = *(base_of_database+linhavarrida*DB_NUM_COLS+CASE0_KEY1) & (uint8_t)X_LOCAL_MASK;
+					if( ((*(base_of_database+linhavarrida*DB_NUM_COLS+CASE0_KEY1)) & ~(uint8_t)X_POLARITY_BIT_MASK) == (MSX_SHIFT_PRESS))
+					{
+						//Shift key
+						if(shiftstate)
+							put_msx_disp_keys_queue_buffer(MSX_SHIFT_PRESS);	//return MSX Shift key as pressed state
+						else
+							put_msx_disp_keys_queue_buffer(MSX_SHIFT_PRESS | X_POLARITY_BIT_MASK);	//return MSX Shift key as released state
+					}	//if( (*(base_of_database+linhavarrida*DB_NUM_COLS+CASE0_KEY1) & ~(uint8_t)X_POLARITY_BIT_MASK) == MSX_SHIFT_PRESS)
+					else // if( (*(base_of_database+linhavarrida*DB_NUM_COLS+CASE0_KEY1) & ~(uint8_t)X_POLARITY_BIT_MASK) == MSX_SHIFT_PRESS)
+					{
+						//Other key: different from Shift key
+						put_msx_disp_keys_queue_buffer(*(base_of_database+linhavarrida*DB_NUM_COLS+CASE0_KEY1));
+					}	//else // if( (*(base_of_database+linhavarrida*DB_NUM_COLS+CASE0_KEY1) & ~(uint8_t)X_POLARITY_BIT_MASK) == MSX_SHIFT_PRESS)
+				}	//if (y_local != y_dummy)
 			}
-			else //case 2: if (!shiftstate) => now, after this else, shiftstate is true (ON)
+			else //case 2: shiftstate is ON now!, so it is a true case 2 (see the displacement CASE2_KEY...)
 			{
 				// Verifica se ha teclas mapeadas
 				// Key 0 (PS/2 Left and Right Shift):
 				y_local = (*(base_of_database+linhavarrida*DB_NUM_COLS+CASE2_KEY0) & (uint8_t)Y_LOCAL_MASK) >> NIBBLE;
-				// Verifica se está mapeada
-				if (y_local != y_dummy)
+				if (y_local != y_dummy)	// Verify if key is mapped
 				{
-					x_local = *(base_of_database+linhavarrida*DB_NUM_COLS+CASE2_KEY0) & (uint8_t)X_LOCAL_MASK;
-					x_local_setb = (*(base_of_database+linhavarrida*DB_NUM_COLS+CASE2_KEY0) & (uint8_t)X_POLARITY_BIT_MASK) >> X_POLARITY_BIT_POSITION;
-					if (*(base_of_database+linhavarrida*DB_NUM_COLS+CASE2_KEY0) == (uint8_t)0x64) //if CODE key is to be pressed
+					//if CODE or GRAPH keys to be pressed, then first release MSX Shift key, and so, press CODE (or GRAPH)
+					if(	(*(base_of_database+linhavarrida*DB_NUM_COLS+CASE2_KEY0) == (uint8_t)0x64) ||	//CODE key pressed
+							(*(base_of_database+linhavarrida*DB_NUM_COLS+CASE2_KEY0) == (uint8_t)0x62)	)	//GRAPH key pressed
 					{
 						//then first release MSX Shift key
 						compute_x_bits_and_check_interrupt_stuck(Y_SHIFT, X_SHIFT, true);
-						//and so, press CODE
+						//and so, press CODE (or GRAPH)
 						put_msx_disp_keys_queue_buffer(*(base_of_database+linhavarrida*DB_NUM_COLS+CASE2_KEY0));
 					}  //if (*(base_of_database+linhavarrida*DB_NUM_COLS+CASE2_KEY0) == 0x64) //if CODE key pressed
-					else if (*(base_of_database+linhavarrida*DB_NUM_COLS+CASE2_KEY0) == (uint8_t)0x6C) //if CODE key released
+					else	//put default key
 					{
-						//So, first release CODE
-						compute_x_bits_and_check_interrupt_stuck(y_local, x_local, x_local_setb);
-						//and then, return MSX Shift key as pressed state
-						put_msx_disp_keys_queue_buffer(Y_SHIFT<<4 | X_SHIFT);
-					}	//if (*(base_of_database+linhavarrida*DB_NUM_COLS+CASE2_KEY0) == 0x6C) //if CODE key released
-					else
-					{
+						x_local = *(base_of_database+linhavarrida*DB_NUM_COLS+CASE2_KEY0) & (uint8_t)X_LOCAL_MASK;
+						x_local_setb = (*(base_of_database+linhavarrida*DB_NUM_COLS+CASE2_KEY0) & (uint8_t)X_POLARITY_BIT_MASK) >> X_POLARITY_BIT_POSITION;
 						compute_x_bits_and_check_interrupt_stuck(y_local, x_local, x_local_setb);
 					}
 				}	//if (y_local != y_dummy)
 				// Key 1 (PS/2 Left and Right Shift):
 				y_local = (*(base_of_database+linhavarrida*DB_NUM_COLS+CASE2_KEY1) & (uint8_t)Y_LOCAL_MASK) >> NIBBLE;
-				// Verifica se está mapeada
+				// Verify if key is mapped
 				if (y_local != y_dummy)
 				{
-					//So, first send CODE released, or another one
-					put_msx_disp_keys_queue_buffer(*(base_of_database+linhavarrida*DB_NUM_COLS+CASE2_KEY1));
-					if (*(base_of_database+linhavarrida*DB_NUM_COLS+CASE2_KEY1) == (uint8_t)0x6C) //if CODE key released
+					//So, first send CODE (or GRAPH) released, or another one, BUT if is MSX Shift at this position, it is release
+					if( (*(base_of_database+linhavarrida*DB_NUM_COLS+CASE2_KEY1) & ~(uint8_t)X_POLARITY_BIT_MASK)
+																																									== (MSX_SHIFT_PRESS) )
 					{
-						//and then, if it is CODE Release, return MSX Shift key as shiftstate
+						//Shift key
 						if(shiftstate)
-							put_msx_disp_keys_queue_buffer(Y_SHIFT<<NIBBLE | X_SHIFT);	//return MSX Shift key as pressed state
+							put_msx_disp_keys_queue_buffer(MSX_SHIFT_PRESS);	//return MSX Shift key as pressed state
 						else
-							put_msx_disp_keys_queue_buffer(Y_SHIFT<<NIBBLE | X_POLARITY_BIT_MASK | X_SHIFT);	//return MSX Shift key as released state
-					}	//if (*(base_of_database+linhavarrida*DB_NUM_COLS+CASE2_KEY1) == 0x6C) //if CODE key released
+							put_msx_disp_keys_queue_buffer(MSX_SHIFT_PRESS | X_POLARITY_BIT_MASK);	//return MSX Shift key as released state
+					}	//if( (*(base_of_database+linhavarrida*DB_NUM_COLS+CASE2_KEY1) & ~(uint8_t)X_POLARITY_BIT_MASK) == (MSX_SHIFT_PRESS))
+					else	//if( (*(base_of_database+linhavarrida*DB_NUM_COLS+CASE2_KEY1) & ~(uint8_t)X_POLARITY_BIT_MASK) == (MSX_SHIFT_PRESS))
+					{
+						put_msx_disp_keys_queue_buffer(*(base_of_database+linhavarrida*DB_NUM_COLS+CASE2_KEY1));
+						//and then, if it is CODE (or GRAPH) Release, reinsert the dropped MSX Shift key
+						if(	(*(base_of_database+linhavarrida*DB_NUM_COLS+CASE2_KEY1) == (uint8_t)0x6C) ||	//if CODE key released
+								(*(base_of_database+linhavarrida*DB_NUM_COLS+CASE2_KEY1) == (uint8_t)0x6A)	) //if GRAPH key released
+						{
+							//and then, as it is CODE (or GRAPH) Release, reinsert the dropped MSX Shift key
+							if(shiftstate)
+								put_msx_disp_keys_queue_buffer(MSX_SHIFT_PRESS);	//return MSX Shift key as pressed state
+							else
+								put_msx_disp_keys_queue_buffer(MSX_SHIFT_PRESS | X_POLARITY_BIT_MASK);	//return MSX Shift key as released state
+						}	//if CODE key released or GRAPH key released
+					}	//if( (*(base_of_database+linhavarrida*DB_NUM_COLS+CASE2_KEY1) & ~(uint8_t)X_POLARITY_BIT_MASK) == (MSX_SHIFT_PRESS))
 				}	//if (y_local != y_dummy)
 			}	//case 2: if (!shiftstate)
-		}  // .2 - Mapeamento alternativo  (PS/2 Left  and Right Shift)  (Colunas 8 e 9)
-	}	//switch(*(base_of_database+linhavarrida*DB_NUM_COLS+3) & 0x03)
+		}  // .2 - Alternate Mapping (PS/2 Left and Right Shift)  (Colunas 8 e 9)
+	}	//switch(*(base_of_database+linhavarrida*DB_NUM_COLS+3) & CASE_MASK)
 }	//void msxmap::msx_dispatch(void)
+
 
 void msxmap::compute_x_bits_and_check_interrupt_stuck (
 	volatile uint8_t y_local, uint8_t x_local, bool x_local_setb)
@@ -805,5 +861,5 @@ void exti9_5_isr(void) // PC3, PC2, PC1 and PC0 - This ISR works like interrupt 
 	exti_reset_request(Y0_exti | Y1_exti | Y2_exti | Y3_exti);
     
 	//Update systicks (time stamp) for this Y
-	previous_y_systick[msx_Y_scan]  = systicks;
+	previous_y_systick[msx_Y_scan] = systicks;
 }

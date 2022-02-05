@@ -17,15 +17,18 @@
 #define	PS2INT_WAIT_FOR_COMMAND_ACK				0x402
 #define	PS2INT_SEND_ARGUMENT							0x403
 #define	PS2INT_WAIT_FOR_ARGUMENT_ACK			0x404
+#define	PS2INT_WAIT_FOR_ECHO							0x405
 
 //PS/2 keyboard iteration constants
 #define COMM_TYPE3_NO_REPEAT							0xF8	//248 Type 3 command
 #define COMM_READ_ID											0xF2	//242
 #define COMM_SET_TYPEMATIC_RATEDELAY			0xF3	//243 Type 2 command
+#define COMM_ENABLE												0xF4	//244
 #define COMM_SET_RESET_LEDS								0xED	//237
 #define COMM_ECHO													0xEE	//238
+#define KBCOMM_RESEND											0xFE	//254
 #define ARG_NO_ARG												0xFF	//255
-#define ARG_LOWRATE_LOWDELAY							0x7F	//Type 2 (Delay 1 second to repeat. 2cps repeat rate)
+#define ARG_LOWRATE_HIGHDELAY							0x7F	//Type 2 (Delay 1 second to repeat. 2cps repeat rate)
 #define KB_ACKNOWLEDGE										0xFA
 #define KB_FIRST_ID												0xAB
 #define KB_SECOND_ID											0x83
@@ -34,7 +37,7 @@
 
 
 //Global Vars
-extern bool update_ps2_leds;											//Declared on msxmap.cpp
+bool update_ps2_leds;
 volatile uint16_t ps2int_state;
 volatile uint8_t ps2int_TX_bit_idx;
 volatile uint8_t ps2int_RX_bit_idx;
@@ -44,6 +47,7 @@ extern uint64_t TIM2_Update_Cnt;									//Declared on hr_timer_delay.c Overflow
 volatile uint8_t command, argument;
 
 volatile uint32_t prev_systicks;
+volatile uint32_t ps2int_prev_systicks;
 extern uint32_t systicks;													//Declared on msxhid.cpp
 extern uint64_t acctimeps2data0;									//Declared on hr_timer_delay.c
 extern  uint32_t formerscancode;									//declared on msxmap.cpp
@@ -52,9 +56,11 @@ extern uint64_t time_between_ps2clk;							//Declared on hr_timer_delay.c
 extern uint16_t fail_count;												//declared on msxhid.cpp
 volatile bool formerps2datapin;
 volatile bool ps2_keyb_detected, ps2numlockstate;
-volatile bool command_ok;
+volatile bool command_ok, echo_received;
+bool caps_state, kana_state;
+bool caps_former, kana_former;
 
-volatile bool mount_scancode_OK;									 	//used on mount_scancode()
+volatile bool mount_scancode_OK;									//used on mount_scancode()
 volatile bool ps2_keystr_e0 = false;
 volatile bool ps2_keystr_e1 = false;
 volatile bool ps2_keystr_f0 = false;
@@ -81,7 +87,8 @@ void reset_mount_scancode_machine(void);
 void power_on_ps2_keyboard()
 {
 	//Set Alternate function
-	gpio_set_af(PS2_CLOCK_PIN_PORT, GPIO_AF1, PS2_POWER_CTR_PIN | PS2_CLOCK_PIN_ID);
+	gpio_set_af(PS2_POWER_CTR_PORT, GPIO_AF1, PS2_POWER_CTR_PIN);
+	gpio_set_af(PS2_CLOCK_PIN_PORT, GPIO_AF1, PS2_CLOCK_PIN_ID);
 	gpio_set_af(PS2_DATA_PIN_PORT, GPIO_AF1, PS2_DATA_PIN_ID);
 	//Power pin control
 	gpio_mode_setup(PS2_POWER_CTR_PORT, GPIO_MODE_OUTPUT, GPIO_PUPD_NONE, PS2_POWER_CTR_PIN);
@@ -120,10 +127,52 @@ void power_on_ps2_keyboard()
 }
 
 
+bool keyboard_check_alive(void)
+{
+	uint32_t systicks_start_command;	//Initial time mark
+
+	while(ps2int_RX_bit_idx != 0) __asm("nop");
+
+	systicks_start_command = systicks;
+	ps2_send_command(COMM_ENABLE, ARG_NO_ARG); //Enable command.
+	while (!command_ok && (systicks - systicks_start_command) < 2) __asm("nop"); //Must be excecuted in less than 67ms
+	if(!command_ok)
+	{
+		return false;
+	}
+
+	systicks_start_command = systicks;
+	echo_received = false;
+	ps2_send_command(COMM_ECHO, ARG_NO_ARG); //Echo command.
+	while (!command_ok && (systicks - systicks_start_command) < 3) __asm("nop"); //Must be excecuted in less than 67ms
+	if(command_ok)
+	{
+		return echo_received;
+	}
+	return false;
+}
+
+
 void power_off_ps2_keyboard()
 {
+	gpio_mode_setup(PS2_POWER_CTR_PORT, GPIO_MODE_OUTPUT, GPIO_PUPD_PULLDOWN, PS2_POWER_CTR_PIN);
 	gpio_clear(PS2_POWER_CTR_PORT, PS2_POWER_CTR_PIN);
-	usart_send_string((uint8_t*)"\r\nPS/2 interface powered down.\r\n\n");
+	serial_send_string((uint8_t*)"\r\nPS/2 interface powered down.\r\n\n");
+}
+
+
+void reset_requested(void)
+{
+	if(gpio_get(PS2_POWER_CTR_PORT, PS2_POWER_CTR_PIN))
+	{
+		//PS/2 interface is not powered off. Do it now!
+		power_off_ps2_keyboard();
+		//Wait here 1/2 second to consolidate this power off
+		uint32_t readsysticks = systicks;
+		while (systicks <= (readsysticks + (FREQ_INT_SYSTICK / 2))) __asm("nop");
+	}
+	systick_interrupt_disable();
+	for(;;) {};//Wait here until reset
 }
 
 
@@ -173,25 +222,25 @@ uint8_t get_ps2_byte(volatile uint8_t *buff)
 bool ps2_keyb_detect(void)
 {
 	uint32_t systicks_start_command;	//Initial time mark
-	uint8_t mountstring[16];					//Used in usart_send_string()
+	uint8_t mountstring[16];					//Used in serial_send_string()
 	uint8_t ch;
 	
-	wait_tx_ends();
+	serial_wait_tx_ends();
 
 	//Clean RX serial buffer to not false glitch database_setup
 	while (serial_available_get_char())
 		ch = serial_get_char();
-	ch&= 0xFF;	//only to avoid unused variable warning.
+	ch &= 0xFF;	//only to avoid unused variable warning.
 
 	//Wait for 2.5s to keyboard execute its own power on and BAT (Basic Assurance Test) procedure
 	systicks_start_command = systicks;
 	ps2_keyb_detected = false;
-	while ( ((systicks-systicks_start_command) < (25*3)) && (!available_ps2_byte()) )	//Wait 2500ms for keyboard power on
+	while ( ((systicks-systicks_start_command) < (25 * (FREQ_INT_SYSTICK / 10))) && (!available_ps2_byte()) )	//Wait 2500ms for keyboard power on
 		prev_systicks = systicks;	//To avoid errors on keyboard power up BEFORE the first access
-	if ((systicks-systicks_start_command) >= (25*3))
+	if ((systicks-systicks_start_command) >= (25 * (FREQ_INT_SYSTICK / 10)))
 	{
 		//User messages
-		usart_send_string((uint8_t*)"..  Timeout on BAT: No keyboard!\r\n");
+		serial_send_string((uint8_t*)"..  Timeout on BAT: No keyboard!\r\n");
 		return ps2_keyb_detected;
 	}
 	//PS/2 keyboard might already sent its BAT result. Check it:
@@ -201,24 +250,24 @@ bool ps2_keyb_detect(void)
 		if(ps2_byte_received == KB_SUCCESSFULL_BAT)
 		{
 			//User messages
-			usart_send_string((uint8_t*)"..  BAT (Basic Assurance Test) OK in ");
+			serial_send_string((uint8_t*)"..  BAT (Basic Assurance Test) OK in ");
 			conv_uint32_to_dec((prev_systicks - systicks_start_command), &mountstring[0]);
-			usart_send_string((uint8_t*)&mountstring[0]);
-			usart_send_string((uint8_t*)" ticks;\r\n");
+			serial_send_string((uint8_t*)&mountstring[0]);
+			serial_send_string((uint8_t*)" ticks;\r\n");
 		}
 		else
 		{
 			//User messages
-			usart_send_string((uint8_t*)"..  BAT not OK: Received 0x");
+			serial_send_string((uint8_t*)"..  BAT not OK: Received 0x");
 			conv_uint8_to_2a_hex(ps2_byte_received, &mountstring[0]);
-			usart_send_string((uint8_t*)&mountstring[0]);
-			usart_send_string((uint8_t*)" instead of 0xAA\r\n");
+			serial_send_string((uint8_t*)&mountstring[0]);
+			serial_send_string((uint8_t*)" instead of 0xAA\r\n");
 		}
 	}
 	
 	//Send command Read ID. It musts responds with 0xFA (implicit), 0xAB, 0x83
 	// Wait clock line to be unactive for 100 ms (3 systicks)
-	//usart_send_string((uint8_t*)"Sending Read ID comm\r\n");
+	//serial_send_string((uint8_t*)"Sending Read ID comm\r\n");
 	systicks_start_command = systicks;
 	ps2_send_command(COMM_READ_ID, ARG_NO_ARG); //Read ID command.
 	while (!command_ok && (systicks - systicks_start_command)<(3*3)) //Must be excecuted in less than 100ms
@@ -231,44 +280,44 @@ bool ps2_keyb_detect(void)
 	}
 	if (command_ok)
 	{
-		//usart_send_string((uint8_t*)"Waiting 0xAB\r\n");
+		//serial_send_string((uint8_t*)"Waiting 0xAB\r\n");
 		systicks_start_command = systicks;
-		while(!available_ps2_byte()&& (systicks - systicks_start_command)<(1*3))
+		while(!available_ps2_byte()&& (systicks - systicks_start_command)<(FREQ_INT_SYSTICK / 10))
     __asm("nop");
 		ps2_byte_received = get_ps2_byte(&ps2_recv_buffer[0]);
 		if(ps2_byte_received == KB_FIRST_ID)
 		{
-			//usart_send_string((uint8_t*)"Waiting 0x83\r\n");
+			//serial_send_string((uint8_t*)"Waiting 0x83\r\n");
 			systicks_start_command = systicks;
-			while(!available_ps2_byte() && (systicks - systicks_start_command)<(1*3))
+			while(!available_ps2_byte() && (systicks - systicks_start_command)<(FREQ_INT_SYSTICK / 10))
 			__asm("nop");
 			ps2_byte_received = get_ps2_byte(&ps2_recv_buffer[0]);
 			if(ps2_byte_received == KB_SECOND_ID)
 			{
 				ps2_keyb_detected = true;
 				//User messages
-				usart_send_string((uint8_t*)"..  PS/2 Keyboard detected;\r\n");
+				serial_send_string((uint8_t*)"..  PS/2 Keyboard detected;\r\n");
 			}
 			else
 			{
-				//usart_send_string((uint8_t*)"Did not receive 0x83");
-				usart_send_string((uint8_t*)"..  PS/2 Keyboard not detected!\r\n");
+				//serial_send_string((uint8_t*)"Did not receive 0x83");
+				serial_send_string((uint8_t*)"..  PS/2 Keyboard not detected!\r\n");
 				return ps2_keyb_detected;
 			}
 		}
 		else
 		{
-			//usart_send_string((uint8_t*)"Did not receive 0xAB");
+			//serial_send_string((uint8_t*)"Did not receive 0xAB");
 			return ps2_keyb_detected;
 		}
 	}
 	else
 	{
 		//User messages
-		/*usart_send_string((uint8_t*)"PS/2 ReadID command not OK. Elapsed time was ");
+		/*serial_send_string((uint8_t*)"PS/2 ReadID command not OK. Elapsed time was ");
 		conv_uint32_to_8a_hex((systicks - systicks_start_command), &mountstring[0]);
-		usart_send_string((uint8_t*)&mountstring[0]);
-		usart_send_string((uint8_t*)"\r\n"); */
+		serial_send_string((uint8_t*)&mountstring[0]);
+		serial_send_string((uint8_t*)"\r\n"); */
 		return ps2_keyb_detected;
 	}
 
@@ -277,37 +326,37 @@ bool ps2_keyb_detect(void)
 	//  If it does not receive "ack" (0xFA), then send type 2 command 0xF3 + 0x7F (2cps repeat rate + 1 second delay)
 	//  It musts respond with an "ack" after the first byte, than with a second "ack" after the second byte.
 	//User messages
-	//usart_send_string((uint8_t*)"Type 2 sets typematic repeat 0xF3 0x7F requested\r\n");
+	//serial_send_string((uint8_t*)"Type 2 sets typematic repeat 0xF3 0x7F requested\r\n");
 	
 	//Type 2 command: Set typematic rate to 2 cps and delay to 1 second.
 	systicks_start_command = systicks;
-	ps2_send_command(COMM_SET_TYPEMATIC_RATEDELAY, ARG_LOWRATE_LOWDELAY);
-	while (!command_ok && (systicks - systicks_start_command)<(2*3)) //Must be excecuted in less than 200ms
+	ps2_send_command(COMM_SET_TYPEMATIC_RATEDELAY, ARG_LOWRATE_HIGHDELAY);
+	while (!command_ok && (systicks - systicks_start_command)<(2 * (FREQ_INT_SYSTICK / 10))) //Must be excecuted in less than 200ms
 		__asm("nop");
 	if (command_ok)
 	{
 		//User messages
-		usart_send_string((uint8_t*)"..  Delay 1 second to repeat, 2cps repeat rate (Type 2 command) OK;\r\n");
+		serial_send_string((uint8_t*)"..  Delay 1 second to repeat, 2cps repeat rate (Type 2 command) OK;\r\n");
 	}
 	else
 	{
 		//User messages
-		usart_send_string((uint8_t*)"..  Type 3 Disables typematic repeat 0xFA requested\r\n");
+		serial_send_string((uint8_t*)"..  Type 3 Disables typematic repeat 0xFA requested\r\n");
 
 		//.1 second delay (to display serial contents) ONLY TO DEBUG
 		systicks_start_command = systicks;
-		while ((systicks - systicks_start_command)<(1*3))
+		while ((systicks - systicks_start_command)<(FREQ_INT_SYSTICK / 10))
 			__asm("nop");
 
 		systicks_start_command = systicks;
 		//Type 3 command: Set All Keys Make/Break: This one only disables typematic repeat and applies to all keys
 		ps2_send_command(COMM_TYPE3_NO_REPEAT, ARG_NO_ARG);
-		while (!command_ok && (systicks - systicks_start_command)<(1*3)) //Must be excecuted in less than 100ms
+		while (!command_ok && (systicks - systicks_start_command)<(FREQ_INT_SYSTICK / 10)) //Must be excecuted in less than 100ms
 			__asm("nop");
 		if (command_ok)
 		{
 			//User messages
-			usart_send_string((uint8_t*)"..  Type 3 Disables typematic 0xFA repeat OK\r\n");
+			serial_send_string((uint8_t*)"..  Type 3 Disables typematic 0xFA repeat OK\r\n");
 		}
 	}
 	return ps2_keyb_detected;
@@ -320,7 +369,7 @@ bool ps2_keyb_detect(void)
 
 void ps2_send_command(uint8_t cmd, uint8_t argm)
 {
-	uint8_t mountstring[16];					//Used in usart_send_string()
+	uint8_t mountstring[16];					//Used in serial_send_string()
 	/*uint32_t systicks_start_command;	//Initial time mark
 
 	systicks_start_command = systicks;
@@ -329,10 +378,10 @@ void ps2_send_command(uint8_t cmd, uint8_t argm)
 	if(ps2int_state != PS2INT_RECEIVE)
 	{
 		//User messages
-		usart_send_string((uint8_t*)"0x");
+		serial_send_string((uint8_t*)"0x");
 		conv_uint16_to_4a_hex(ps2int_state, &mountstring[0]);
-		usart_send_string((uint8_t*)&mountstring[0]);
-		usart_send_string((uint8_t*)", instead of 0x0400\r\n");
+		serial_send_string((uint8_t*)&mountstring[0]);
+		serial_send_string((uint8_t*)", instead of 0x0400\r\n");
 	}
 	command =  cmd;
 	argument = argm;
@@ -343,15 +392,15 @@ void ps2_send_command(uint8_t cmd, uint8_t argm)
 
 void ps2_update_leds(bool num, bool caps, bool scroll)
 {
-	uint8_t mountstring[16];					//Used in usart_send_string()
+	uint8_t mountstring[16];					//Used in serial_send_string()
 
 	if(ps2int_state != PS2INT_RECEIVE)
 	{
 		//User messages
-		usart_send_string((uint8_t*)"0x");
+		serial_send_string((uint8_t*)"0x");
 		conv_uint16_to_4a_hex(ps2int_state, &mountstring[0]);
-		usart_send_string((uint8_t*)&mountstring[0]);
-		usart_send_string((uint8_t*)", instead of 0x0400\r\n");
+		serial_send_string((uint8_t*)&mountstring[0]);
+		serial_send_string((uint8_t*)", instead of 0x0400\r\n");
 	}
 	command = COMM_SET_RESET_LEDS;
 	argument = (scroll<<0)|(num<<1)|(caps<<2);
@@ -363,7 +412,7 @@ void ps2_update_leds(bool num, bool caps, bool scroll)
 //Insert a delay before run send_start_bit_now()
 void send_start_bit_next(uint16_t x_usec)
 {
-	delay_usec(x_usec, send_start_bit_now); //wait x_usec and go to send_start_bit on TIM2 overflow interrupt
+	delay_usec(TIM2, x_usec, send_start_bit_now); //wait x_usec and go to send_start_bit on TIM2 overflow interrupt
 }
 
 
@@ -379,8 +428,7 @@ void send_start_bit_now(void)
 	//Something was wrong with original delay, so I decided to use TIM2 Capture/Compare interrupt
 	// See hr_timer_delay.c file
 	//now insert a 120us delay and run step 2 of send_start_bit function
-	prev_systicks = systicks;
-	delay_usec(120, send_start_bit2); //wait 120usec and go to send_start_bit2 on TIM2 overflow interrupt
+	delay_usec(TIM2, 120, send_start_bit2); //wait 120usec and go to send_start_bit2 on TIM2 overflow interrupt
 }
 
 
@@ -388,13 +436,13 @@ void send_start_bit2(void) //Second part of send_start_bit
 {
 	gpio_clear(PS2_DATA_PIN_PORT, PS2_DATA_PIN_ID); //this is the start bit
 	//now insert a 10us delay and run step 3 of send_start_bit function
-	delay_usec(10, send_start_bit3); /*wait 10usec and go to send_start_bit3 on TIM2 overflow interrupt*/
+	delay_usec(TIM2, 10, send_start_bit3); /*wait 10usec and go to send_start_bit3 on TIM2 overflow interrupt*/
 }
 
 
 void send_start_bit3(void) //Third part of send_start_bit
 {
-	prev_systicks = systicks;
+	ps2int_prev_systicks = systicks;
 	//Rise clock edge starts the PS/2 device to receive command/argument
 	gpio_set(PS2_CLOCK_PIN_PORT, PS2_CLOCK_PIN_ID);
 
@@ -426,25 +474,25 @@ void ps2_clock_update(bool ps2datapin_logicstate)
 	else
 		acctimeps2data0 = 0;		//Reset acc time counter
 	formerps2datapin = ps2datapin_logicstate;	//To compare at next bit
-	uint8_t mountstring[16]; //Used in usart_send_string()
+	uint8_t mountstring[16]; //Used in serial_send_string()
 	/*Any keyboard interrupt that comes after 900 micro seconds means an error condition,
 	but I`m considering it as an error for about 100 ms, to acommodate this to power on, to answer 
 	to Read ID command. I observed this behavior on my own PS/2 keyboard. It is huge!*/
 	if( ((ps2int_state == PS2INT_SEND_COMMAND) || (ps2int_state == PS2INT_SEND_ARGUMENT))
-				&& ((ps2int_TX_bit_idx != 0) && (systicks - prev_systicks) > 1) )
+				&& ((ps2int_TX_bit_idx != 0) && (systicks - ps2int_prev_systicks) > 1) )
 	{	//reset to PS/2 receive condition
 		gpio_set(PS2_DATA_PIN_PORT, PS2_DATA_PIN_ID);
 		//User messages (debug)
-		usart_send_string((uint8_t*)"ps2_clock_sent reseted - Timeout = ");
-		conv_uint32_to_dec((systicks - prev_systicks), &mountstring[0]);
-		usart_send_string((uint8_t*)&mountstring[0]);
-		usart_send_string((uint8_t*)", ps2int_TX_bit_idx = ");
+		serial_send_string((uint8_t*)"ps2_clock_sent reseted - Timeout = ");
+		conv_uint32_to_dec((systicks - ps2int_prev_systicks), &mountstring[0]);
+		serial_send_string((uint8_t*)&mountstring[0]);
+		serial_send_string((uint8_t*)", ps2int_TX_bit_idx = ");
 		conv_uint32_to_dec((uint32_t)ps2int_TX_bit_idx, &mountstring[0]);
-		usart_send_string((uint8_t*)&mountstring[0]);
-		usart_send_string((uint8_t*)", ");
+		serial_send_string((uint8_t*)&mountstring[0]);
+		serial_send_string((uint8_t*)", ");
 		conv_uint16_to_4a_hex(ps2int_state, &mountstring[0]);
-		usart_send_string((uint8_t*)&mountstring[0]);
-		usart_send_string((uint8_t*)";\r\n");
+		serial_send_string((uint8_t*)&mountstring[0]);
+		serial_send_string((uint8_t*)";\r\n");
 		ps2int_state = PS2INT_RECEIVE;
 		ps2int_RX_bit_idx = 0;
 	}
@@ -462,55 +510,55 @@ void ps2_clock_update(bool ps2datapin_logicstate)
 
 void ps2_clock_send(bool ps2datapin_logicstate)
 {
-	//uint8_t mountstring[16]; //Used in usart_send_string()
-	prev_systicks = systicks;
+	uint8_t mountstring[16]; //Used in serial_send_string()
+	ps2int_prev_systicks = systicks;
 	//Time check - The same for all bits
 	if (time_between_ps2clk > 10000) // time >10ms
 	{
-		usart_send_string((uint8_t*)"Time > 10ms on TX");
+		serial_send_string((uint8_t*)"Time > 10ms on TX");
 	}
 	//|variável| = `if`(condição) ? <valor1 se true> : <valor2 se false>;:
 	//Only two TX states of send: ps2_send_command & send_argument
 	uint8_t data_byte = (ps2int_state == PS2INT_SEND_COMMAND) ? command : argument;
-	//if( (ps2int_TX_bit_idx >= 0) && (ps2int_TX_bit_idx < 8) )
+	//if( (ps2int_TX_bit_idx >= 0) && (ps2int_TX_bit_idx < 8) )	//The first test will be always true
 	if(ps2int_TX_bit_idx < 8)
 	{
 		bool bit = data_byte & (1 << (ps2int_TX_bit_idx));
 		ps2int_TX_bit_idx++;
 			//User messages (debug)
-			/*usart_send_string((uint8_t*)"sent bit #");
+			/*serial_send_string((uint8_t*)"sent bit #");
 			conv_uint32_to_dec((uint32_t)ps2int_TX_bit_idx-1, &mountstring[0]);
-			usart_send_string((uint8_t*)&mountstring[0]);
-			usart_send_string((uint8_t*)": ");*/
+			serial_send_string((uint8_t*)&mountstring[0]);
+			serial_send_string((uint8_t*)": ");*/
 		if(bit)
 		{
 			gpio_set(PS2_DATA_PIN_PORT, PS2_DATA_PIN_ID);
 			//User messages (debug)
-			/*usart_send_string((uint8_t*)"1\r\n");*/
+			/*serial_send_string((uint8_t*)"1\r\n");*/
 		}
 		else
 		{
 			gpio_clear(PS2_DATA_PIN_PORT, PS2_DATA_PIN_ID);
 			//User messages (debug)
-			/*usart_send_string((uint8_t*)"0\r\n");*/
+			/*serial_send_string((uint8_t*)"0\r\n");*/
 		}
 	}
 	else if(ps2int_TX_bit_idx == 8)
 	{//parity
 		bool parity =! __builtin_parity(data_byte);
 		//User messages (debug)
-		//usart_send_string((uint8_t*)"sent p: "); //This print continues below
+		//serial_send_string((uint8_t*)"sent p: "); //This print continues below
 		if(parity)
 		{
 			gpio_set(PS2_DATA_PIN_PORT, PS2_DATA_PIN_ID);
 			//User messages (debug)
-			//usart_send_string((uint8_t*)"1\r\n");
+			//serial_send_string((uint8_t*)"1\r\n");
 		}
 		else
 		{
 			gpio_clear(PS2_DATA_PIN_PORT, PS2_DATA_PIN_ID);
 			//User messages (debug)
-			//usart_send_string((uint8_t*)"0\r\n");
+			//serial_send_string((uint8_t*)"0\r\n");
 		}
 		ps2int_TX_bit_idx = 9;
 	}
@@ -519,7 +567,7 @@ void ps2_clock_send(bool ps2datapin_logicstate)
 		gpio_set(PS2_DATA_PIN_PORT, PS2_DATA_PIN_ID);
 		ps2int_TX_bit_idx = 10;
 		//User messages (debug)
-		//usart_send_string((uint8_t*)"sent stop\r\n");
+		//serial_send_string((uint8_t*)"sent stop\r\n");
 	}
 	else if(ps2int_TX_bit_idx >= 10)
 	{
@@ -527,13 +575,13 @@ void ps2_clock_send(bool ps2datapin_logicstate)
 		{
 			//  ACK bit ok
 			//User messages (debug)
-			/*usart_send_string((uint8_t*)"TX Data sent OK: 0x");
+			/*serial_send_string((uint8_t*)"TX Data sent OK: 0x");
 			conv_uint8_to_2a_hex(data_byte, &mountstring[0]);
-			usart_send_string((uint8_t*)&mountstring[0]);
-			usart_send_string((uint8_t*)", 0x");
+			serial_send_string((uint8_t*)&mountstring[0]);
+			serial_send_string((uint8_t*)", 0x");
 			conv_uint16_to_4a_hex(ps2int_state, &mountstring[0]);
-			usart_send_string((uint8_t*)&mountstring[0]);
-			usart_send_string((uint8_t*)"\r\n");*/
+			serial_send_string((uint8_t*)&mountstring[0]);
+			serial_send_string((uint8_t*)"\r\n");*/
 			
 		}
 		else
@@ -541,35 +589,44 @@ void ps2_clock_send(bool ps2datapin_logicstate)
 			// Ack bit NOT ok
 			gpio_set(PS2_DATA_PIN_PORT, PS2_DATA_PIN_ID);	//To warranty that is not caused by let this pin LOW
 			//User messages (debug)
-			/*usart_send_string((uint8_t*)"Trying to send 0x");
+			serial_send_string((uint8_t*)"Trying to send 0x");
 			conv_uint8_to_2a_hex(data_byte, &mountstring[0]);
-			usart_send_string((uint8_t*)&mountstring[0]);
-			usart_send_string((uint8_t*)". ACK bit not received from keyboard\r\n");*/
+			serial_send_string((uint8_t*)&mountstring[0]);
+			serial_send_string((uint8_t*)". ACK bit not received from keyboard\r\n");
 			ps2int_state = PS2INT_RECEIVE; //force to receive_status in absence of something better
 			ps2int_RX_bit_idx = 0;
 		}
 
 		if(ps2int_state == PS2INT_SEND_COMMAND)
 		{
-			//For me, after commmand sent, you have to wait the PS/2 Acknowlodge from the command,
-			//but the original logic pointed to state=PS2INT_RECEIVE.
-			ps2int_state = PS2INT_WAIT_FOR_COMMAND_ACK;
-			ps2int_RX_bit_idx =  0;
-			//User messages (debug)
-			/*usart_send_string((uint8_t*)"TX: new 0x");
-			conv_uint16_to_4a_hex(ps2int_state, &mountstring[0]);
-			usart_send_string((uint8_t*)&mountstring[0]);
-			usart_send_string((uint8_t*)"\r\n");*/
+			//Although the original logic pointed state=PS2INT_RECEIVE,
+			//after send the commmand, you have to wait the Acknowlodge of the PS/2 command.
+			//It is fixed here.
+			if(command != COMM_ECHO)
+			{
+				ps2int_state = PS2INT_WAIT_FOR_COMMAND_ACK;
+				ps2int_RX_bit_idx =  0;
+				//User messages (debug)
+				/*serial_send_string((uint8_t*)"TX: new 0x");
+				conv_uint16_to_4a_hex(ps2int_state, &mountstring[0]);
+				serial_send_string((uint8_t*)&mountstring[0]);
+				serial_send_string((uint8_t*)"\r\n");*/
+			}
+			else
+			{	//New state created to acomodate waiting for echo
+				ps2int_state = PS2INT_WAIT_FOR_ECHO;
+				ps2int_RX_bit_idx =  0;
+			}
 		}
 		else if(ps2int_state == PS2INT_SEND_ARGUMENT)
 		{
 			ps2int_state = PS2INT_WAIT_FOR_ARGUMENT_ACK;
 			ps2int_RX_bit_idx =  0;
 			//User messages (debug)
-			/*usart_send_string((uint8_t*)"TX: new 0x");
+			/*serial_send_string((uint8_t*)"TX: new 0x");
 			conv_uint16_to_4a_hex(ps2int_state, &mountstring[0]);
-			usart_send_string((uint8_t*)&mountstring[0]);
-			usart_send_string((uint8_t*)"\r\n");*/
+			serial_send_string((uint8_t*)&mountstring[0]);
+			serial_send_string((uint8_t*)"\r\n");*/
 		}
 		else
 		{
@@ -577,10 +634,10 @@ void ps2_clock_send(bool ps2datapin_logicstate)
 			ps2int_state = PS2INT_RECEIVE;
 			ps2int_RX_bit_idx =  0;
 			//User messages (debug)
-			/*usart_send_string((uint8_t*)"TX: new 0x");
+			/*serial_send_string((uint8_t*)"TX: new 0x");
 			conv_uint16_to_4a_hex(ps2int_state, &mountstring[0]);
-			usart_send_string((uint8_t*)&mountstring[0]);
-			usart_send_string((uint8_t*)"\r\n");*/
+			serial_send_string((uint8_t*)&mountstring[0]);
+			serial_send_string((uint8_t*)"\r\n");*/
 		}
 	}
 }
@@ -589,25 +646,25 @@ void ps2_clock_send(bool ps2datapin_logicstate)
 void ps2_clock_receive(bool ps2datapin_logicstate)
 {
 	static uint8_t data_word, stop_bit, parity_bit;
-	uint8_t mountstring[16]; //Used in usart_send_string()
+	uint8_t mountstring[16]; //Used in serial_send_string()
 
 	//Verify RX timeout, that is quite restricted, if compared to Send Command/Argument
 	if ( (ps2int_RX_bit_idx != 0) && (time_between_ps2clk > 120) )  //because if RX_bit_idx == 0 will be the reset
 	{	
-		//usart_send_string((uint8_t*)"ps2_clock_receive - Timeout\r\n");
+		serial_send_string((uint8_t*)"ps2_clock_receive - Timeout\r\n");
 		ps2int_RX_bit_idx = 0;
 	}
-	prev_systicks = systicks;
+	ps2int_prev_systicks = systicks;
 
 	if(ps2int_RX_bit_idx == 0)
 	{
 		//Force this interface to put data line in Hi-Z to avoid unspected behavior in case of errors
 		gpio_set(PS2_DATA_PIN_PORT, PS2_DATA_PIN_ID);
 		//User messages (debug)
-		//usart_send_string((uint8_t*)"RX: ps2int_state = 0x");
+		//serial_send_string((uint8_t*)"RX: ps2int_state = 0x");
 		//conv_uint16_to_4a_hex(ps2int_state, &mountstring[0]);
-		//usart_send_string((uint8_t*)&mountstring[0]);
-		//usart_send_string((uint8_t*)"\r\n");
+		//serial_send_string((uint8_t*)&mountstring[0]);
+		//serial_send_string((uint8_t*)"\r\n");
 		data_word = 0;
 		stop_bit = 0xff;
 		parity_bit = 0xff;
@@ -619,7 +676,7 @@ void ps2_clock_receive(bool ps2datapin_logicstate)
   		ps2int_RX_bit_idx = 0; //reset
 		}
 	}
-	else if( (ps2int_RX_bit_idx>0) && (ps2int_RX_bit_idx<9) ) // collect bits 1 to 8 (D0 to D7)
+	else if( /*(ps2int_RX_bit_idx>0) && */(ps2int_RX_bit_idx<9) ) // collect bits 1 to 8 (D0 to D7)
 	{
 		data_word |= (ps2datapin_logicstate << (ps2int_RX_bit_idx - 1));
 		ps2int_RX_bit_idx++;
@@ -636,21 +693,21 @@ void ps2_clock_receive(bool ps2datapin_logicstate)
 		stop_bit = ps2datapin_logicstate;
 		bool parity_ok = __builtin_parity((data_word<<1)|parity_bit);
 		//User messages (debug)
-		/*usart_send_string((uint8_t*)"RX Data: 0x");
+		/*serial_send_string((uint8_t*)"RX Data: 0x");
 		conv_uint8_to_2a_hex(data_word, &mountstring[0]);
-		usart_send_string((uint8_t*)&mountstring[0]);
+		serial_send_string((uint8_t*)&mountstring[0]);
 		if(parity_ok)
-			usart_send_string((uint8_t*)", pbit OK,");
+			serial_send_string((uint8_t*)", pbit OK,");
 		else
-			usart_send_string((uint8_t*)", pbit issue,");
+			serial_send_string((uint8_t*)", pbit issue,");
 		if(stop_bit == 1)
-			usart_send_string((uint8_t*)" sbit OK,");
+			serial_send_string((uint8_t*)" sbit OK,");
 		else
-			usart_send_string((uint8_t*)" sbit issue,");
-		usart_send_string((uint8_t*)" 0x");
+			serial_send_string((uint8_t*)" sbit issue,");
+		serial_send_string((uint8_t*)" 0x");
 		conv_uint16_to_4a_hex(ps2int_state, &mountstring[0]);
-		usart_send_string((uint8_t*)&mountstring[0]);
-		usart_send_string((uint8_t*)"\r\n");*/
+		serial_send_string((uint8_t*)&mountstring[0]);
+		serial_send_string((uint8_t*)"\r\n");*/
 
 		if(parity_ok && (stop_bit == 1) ) //start bit condition was already tested above
 		{	// ps2int_status receive procesing block (begin)
@@ -673,10 +730,20 @@ void ps2_clock_receive(bool ps2datapin_logicstate)
 				{
 					if(argument == ARG_NO_ARG) //0xFF is an empty argument
 					{
-						//no argument: set to receive
-						ps2int_state = PS2INT_RECEIVE;
-						ps2int_RX_bit_idx = 0;//reset PS/2 receive condition
-						command_ok = true;
+						if(command == COMM_ECHO)
+						{
+							//Wait for ECHO
+							ps2int_state = PS2INT_WAIT_FOR_ECHO;
+							ps2int_RX_bit_idx = 0;//reset PS/2 receive condition
+							command_ok = true;
+						}
+						else
+						{
+							//no argument: set to receive
+							ps2int_state = PS2INT_RECEIVE;
+							ps2int_RX_bit_idx = 0;//reset PS/2 receive condition
+							command_ok = true;
+						}
 					}
 					else
 					{
@@ -685,22 +752,23 @@ void ps2_clock_receive(bool ps2datapin_logicstate)
 						send_start_bit_next(150);
 					}
 				}
-				else if(data_word == 0xfe) //0xFE is Resend
+
+				else if(data_word == KBCOMM_RESEND) //0xFE is Resend
 				{
 					ps2int_state = PS2INT_SEND_COMMAND;
 					send_start_bit_next(150); //Send BOTH command and argument
-				}	//if(data_word==0xfe) //0xFE is Resend
+				}	//if(data_word==KBCOMM_RESEND) //0xFE is Resend
 				else
 				{
 					//User messages (debug)
-					usart_send_string((uint8_t*)"Got unexpected command response: 0x");
+					serial_send_string((uint8_t*)"Got unexpected command response: 0x");
 					conv_uint8_to_2a_hex(data_word, &mountstring[0]);
-					usart_send_string((uint8_t*)&mountstring[0]);
-					usart_send_string((uint8_t*)"\r\n");
+					serial_send_string((uint8_t*)&mountstring[0]);
+					serial_send_string((uint8_t*)"\r\n");
 					ps2int_state = PS2INT_RECEIVE;
 					ps2int_RX_bit_idx = 0;//reset PS/2 receive condition
 					fail_count++;
-				}	//else if(data_word==0xfe) //0xFE is Resend
+				}	//else if(data_word==KBCOMM_RESEND) //0xFE is Resend
 			}
 
 			else if (ps2int_state == PS2INT_WAIT_FOR_ARGUMENT_ACK)
@@ -712,7 +780,7 @@ void ps2_clock_receive(bool ps2datapin_logicstate)
 					ps2int_RX_bit_idx = 0;//Prepares for the next PS/2 receive condition
 					command_ok = true;
 				}
-				else if(data_word == 0xfe) //0xFE is Resend
+				else if(data_word == KBCOMM_RESEND) //0xFE is Resend
 				{
 					ps2int_state = PS2INT_SEND_COMMAND; //Resend BOTH command AND argument
 					send_start_bit_next(150);
@@ -722,26 +790,54 @@ void ps2_clock_receive(bool ps2datapin_logicstate)
 					ps2int_state = PS2INT_RECEIVE;
 					ps2int_RX_bit_idx = 0;//reset PS/2 receive condition
 					//User messages (debug)
-					usart_send_string((uint8_t*)"Got unexpected command response: 0x");
+					serial_send_string((uint8_t*)"Got unexpected command response: 0x");
 					conv_uint8_to_2a_hex(data_word, &mountstring[0]);
-					usart_send_string((uint8_t*)&mountstring[0]);
-					usart_send_string((uint8_t*)"\r\n");
+					serial_send_string((uint8_t*)&mountstring[0]);
+					serial_send_string((uint8_t*)"\r\n");
 				}
 			}		// ps2int_status receive procesing block (end)
+
+			else if (ps2int_state == PS2INT_WAIT_FOR_ECHO)
+			{
+				if(data_word == COMM_ECHO) //Echo received from PS/2 keyboard
+				{
+					//Echo received => set to receive
+					ps2int_state = PS2INT_RECEIVE;
+					ps2int_RX_bit_idx = 0;//Prepares for the next PS/2 receive condition
+					command_ok = true;
+					echo_received = true;
+				}
+				else //if(data_word == COMM_ECHO)
+				{	//data_word != COMM_ECHO (0xEE)
+					echo_received = false;
+					//User messages (debug)
+					serial_send_string((uint8_t*)"In 0x");
+					conv_uint16_to_4a_hex(ps2int_state, &mountstring[0]);
+					serial_send_string((uint8_t*)&mountstring[0]);
+					serial_send_string((uint8_t*)", received 0x");
+					conv_uint8_to_2a_hex(data_word, &mountstring[0]);
+					serial_send_string((uint8_t*)&mountstring[0]);
+					serial_send_string((uint8_t*)" instead of COMM_ECHO (0xEE)\r\n");
+					//serial_wait_tx_ends();
+				}	 //if(data_word == COMM_ECHO)
+			}	//else if (ps2int_state == PS2INT_WAIT_FOR_ECHO)
+
 		}	//if(start_bit==0 && stop_bit==1 && parity_ok)
 		else
 		{
 			//User messages (debug)
-			/*usart_send_string((uint8_t*)"Framming Error. RX Data: 0x");
-			conv_uint8_to_2a_hex(data_byte, &mountstring[0]);
-			usart_send_string((uint8_t*)&mountstring[0]);
-			usart_send_string((uint8_t*)", parity ");
-			mountstring = parity_bit ? "1" : "0";
-			usart_send_string((uint8_t*)&mountstring[0]);
-			usart_send_string((uint8_t*)", Stop ");
-			mountstring = stop_bit ? "1" : "0";
-			usart_send_string((uint8_t*)&mountstring[0]);
-			usart_send_string((uint8_t*)"\r\n"); */
+			serial_send_string((uint8_t*)"Framming Error. RX Data: 0x");
+			conv_uint8_to_2a_hex(data_word, &mountstring[0]);
+			serial_send_string((uint8_t*)&mountstring[0]);
+			serial_send_string((uint8_t*)", parity ");
+			mountstring[0] = parity_bit ? '1' : '0';
+			mountstring[1] = 0;
+			serial_send_string((uint8_t*)mountstring);
+			serial_send_string((uint8_t*)", Stop ");
+			mountstring[0] = stop_bit ? '1' : '0';
+			mountstring[1] = 0;
+			serial_send_string((uint8_t*)&mountstring[0]);
+			serial_send_string((uint8_t*)"\r\n");
 			fail_count++;
 			ps2int_RX_bit_idx = 0;
 		}
@@ -760,6 +856,11 @@ void reset_mount_scancode_machine()
 
 bool mount_scancode()
 {
+	//Check MSX CAPS and Kana status update
+	if( (caps_state = gpio_get(CAPSLOCK_PORT, CAPSLOCK_PIN_ID)) != caps_former )
+		update_ps2_leds = true;
+	if( (kana_state = gpio_get(KANA_PORT, KANA_PIN_ID)) != kana_former )
+		update_ps2_leds = true;
 	// static uint16_t prev_state_index=0;
 	if (!mount_scancode_OK)
 	{	
@@ -767,10 +868,10 @@ bool mount_scancode()
 		{
 			ps2_byte_received = get_ps2_byte(&ps2_recv_buffer[0]);
 			//User messages (debug)
-			/*usart_send_string((uint8_t*)"Mount_scancode RX Ch=");
+			/*serial_send_string((uint8_t*)"Mount_scancode RX Ch=");
 			conv_uint8_to_2a_hex(ps2_byte_received, &mountstring[0]);
-			usart_send_string((uint8_t*)&mountstring[0]);
-			usart_send_string((uint8_t*)"\r\n"); */
+			serial_send_string((uint8_t*)&mountstring[0]);
+			serial_send_string((uint8_t*)"\r\n"); */
 			switch (mount_scancode_count_status)
 			{
 			case 0:	//Está lendo o primeiro byte do ps2_byte_received
@@ -896,9 +997,17 @@ bool mount_scancode()
 						break;
 					}
 				}
+				else if (ps2_keystr_e1)
+				{
+					//São 8 bytes, e estou lendo o terceiro byte.
+					scancode[3] = ps2_byte_received;
+					scancode[0] = 3;
+					mount_scancode_count_status = 3; //points to next case
+					break;
+				}
  				break;	//case syntax suggested
 			}	//case 2:
-			/*//Está lendo o quarto byte do ps2_byte_received Pause/Break
+			//Está lendo o quarto byte do ps2_byte_received Pause/Break
 			case 3:
 			{
 				if (ps2_keystr_e1 == true)  //Break key (8 bytes)
@@ -955,7 +1064,7 @@ bool mount_scancode()
 				mount_scancode_OK = true;
 				reset_mount_scancode_machine();
 				return true;
-			}*/
+			}
 			default:
 				break;
 			}	//switch (mount_scancode_count_status)
@@ -990,7 +1099,7 @@ void general_debug_setup(void)
 void put_pullups_on_non_used_pins(void)
 {
 	//Left these pins as inputs, but floating state is avoided by activating internal pull-up resistor.
-	gpio_mode_setup(AVAILABLE_A2_PORT, GPIO_MODE_INPUT, GPIO_PUPD_PULLUP, AVAILABLE_A2_PIN_ID);
+	//gpio_mode_setup(AVAILABLE_A2_PORT, GPIO_MODE_INPUT, GPIO_PUPD_PULLUP, AVAILABLE_A2_PIN_ID);
 	gpio_mode_setup(AVAILABLE_A3_PORT, GPIO_MODE_INPUT, GPIO_PUPD_PULLUP, AVAILABLE_A3_PIN_ID);
 	gpio_mode_setup(AVAILABLE_A11_PORT, GPIO_MODE_INPUT, GPIO_PUPD_PULLUP, AVAILABLE_A11_PIN_ID);
 	gpio_mode_setup(AVAILABLE_A12_PORT, GPIO_MODE_INPUT, GPIO_PUPD_PULLUP, AVAILABLE_A12_PIN_ID);

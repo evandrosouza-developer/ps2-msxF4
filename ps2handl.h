@@ -18,9 +18,11 @@ extern "C" {
 
 void power_on_ps2_keyboard(void);
 void power_off_ps2_keyboard(void);
+void reset_requested(void);
 bool ps2_keyb_detect(void);
 void ps2_clock_update(bool);
 void ps2_update_leds(bool, bool, bool);
+bool keyboard_check_alive(void);
 bool mount_scancode(void);
 
 void send_start_bit_now(void);

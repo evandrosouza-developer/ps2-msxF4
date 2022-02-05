@@ -40,6 +40,7 @@
 #include "database.c"
 #include "port_def.h"
 #include "serial.h"
+#include "ps2handl.h"
 
 
 //Processor related sizes and adress:
@@ -68,7 +69,6 @@ void check_flash_error(void);
 void check_flash_locked(void);
 bool check_sector3_erased(bool*, uint16_t*);
 void cleanupFlash(bool*, uint16_t*);
-//bool check_sector5_erased(bool*, uint16_t*);
 
 
 //Global var area:
@@ -79,9 +79,10 @@ extern uint8_t UNUSED_DATABASE[DB_NUM_COLS];			//Declared on msxmap.cpp
 extern uint32_t *base_of_database;								//Declared on msxmap.cpp
 extern volatile bool update_ps2_leds;							//Declared on msxmap.cpp
 extern uint8_t y_dummy;														//Declared on msxmap.cpp
-extern bool ps2numlockstate;											//Declared on ps2handl.c
-extern bool ps2_keyb_detected;										//Declared on ps2handl.c
+extern bool ps2_keyb_detected, ps2numlockstate;		//Declared on ps2handl.c
 extern bool enable_xon_xoff;											//Declared on serial.c
+extern struct ring rx_ring;												//Declared on serial.c
+extern uint32_t systicks;													//Declared on sys_timer.cpp
 
 
 void database_setup(void)
@@ -107,14 +108,40 @@ void database_setup(void)
 				ch = serial_get_char();
 			if (!gpio_get(USER_KEY_PORT, USER_KEY_PIN_ID))	//USER_KEY is exclusive of WeAct board
 			{
-				usart_send_string((uint8_t*)"\r\n\nOk. Now release user key...");
+				serial_send_string((uint8_t*)"\r\n\nOk. Now release user key...");
 				while (!gpio_get(USER_KEY_PORT, USER_KEY_PIN_ID))	//But stay here until the button is released
 					__asm("NOP");
 			}
-			usart_send_string((uint8_t*)"\r\nReset Database to factory default. Press ""&"" to proceed or any other key to abort");
+			serial_send_string((uint8_t*)"\r\nReset Database to factory default. Press ""&"" to proceed or any other key to abort\r\n");
 			//Wait for user action
+			uint32_t lastsysticks = systicks;
+			bool print_message = true;
 			while (!serial_available_get_char())
-				__asm("nop");
+			{
+				if( ((systicks - lastsysticks) % FREQ_INT_SYSTICK) == 0 )
+				{
+					ch = (MAX_TIMEOUT2AMPERSAND - (systicks - lastsysticks)) / FREQ_INT_SYSTICK;
+					if(print_message && ch < (MAX_TIMEOUT2AMPERSAND / FREQ_INT_SYSTICK))
+					{
+						serial_send_string((uint8_t*)"Timeout to answer: ");
+						conv_uint32_to_dec((uint32_t)ch, str_mount);
+						serial_send_string(str_mount);
+						serial_send_string((uint8_t*)"s \r");
+						print_message = false;
+					}
+				}
+				else
+				{
+					print_message = true;
+				}
+				//Check timeout
+				if( (systicks - lastsysticks) > MAX_TIMEOUT2AMPERSAND )
+				{
+					//User messages
+					serial_send_string((uint8_t*)"\r\n\nTimeout to answer: Proceeding without Reset the Database.\r\n");
+					ring_put_ch(&rx_ring, ' ');
+				}
+			}
 			ch = serial_get_char();
 			if(ch == '&')
 				cleanupFlash(&sector_erased, &attempts_erasing_sector);
@@ -137,10 +164,10 @@ void database_setup(void)
 	{
 		//Database is empty. Use DEFAULT_MSX_KEYB_DATABASE_CONVERSION
 		base_of_database8 = (uint8_t*)&DEFAULT_MSX_KEYB_DATABASE_CONVERSION[0][0];
-		usart_send_string((uint8_t*)"..  Database OK at 0x");
+		serial_send_string((uint8_t*)"..  Database OK at 0x");
 		conv_uint32_to_8a_hex((uintptr_t)(base_of_database8), void_ptr);
-		usart_send_string((uint8_t*)str_mount);
-		usart_send_string((uint8_t*)". Reading system parameters...\r\n");
+		serial_send_string((uint8_t*)str_mount);
+		serial_send_string((uint8_t*)". Reading system parameters...\r\n");
 		y_dummy 				=  *(base_of_database8 + 3) & 0x0F; //Low nibble (no keys at this column)
 		ps2numlockstate = (*(base_of_database8 + 3) & 0x10) != 0; //Bit 4
 		enable_xon_xoff = (*(base_of_database8 + 3) & 0x20) != 0; //Bit 5
@@ -148,58 +175,6 @@ void database_setup(void)
 		base_of_database = (uint32_t*)base_of_database8;
 		compatible_database = true;
 		return;
-		/*
-		//Database is empty. Copy DEFAULT_MSX_KEYB_DATABASE_CONVERSION to RAM Buffer
-		for(iter = 0; iter < DATABASE_SIZE; iter ++)
-		{
-				ch = *(base_of_database8 + iter);
-				flash_buffer_ram[iter] = ch;
-		}
-
-		//Then put it on INITIAL_DATABASE place => programming flash memory
-		base_of_database = (uint32_t*)INITIAL_DATABASE;
-		//Information to user
-		usart_send_string((uint8_t*)"\r\nInitializing Default Database on flash memory...");
-		usart_send_string((uint8_t*)"\r\n\nBase Address  Size\r\n");
-		uintptr_t base_of_database_num = (uintptr_t)base_of_database;	//Convert from pointer to integer
-		void_ptr = &str_mount;
-		conv_uint32_to_8a_hex(((uint32_t)base_of_database_num), void_ptr);
-		usart_send_string((uint8_t*)" 0x");
-		usart_send_string((uint8_t*)str_mount);
-		usart_send_string((uint8_t*)"   ");
-		conv_uint32_to_dec((uint32_t)DATABASE_SIZE, void_ptr);
-		usart_send_string((uint8_t*)str_mount);
-		wait_tx_ends();
-		check_flash_locked();
-		flash_program((uint32_t)base_of_database_num, flash_buffer_ram, DATABASE_SIZE);
-		check_flash_error();
-
-		usart_send_string((uint8_t*)"\r\n\nVerification of written data: ");
-		//verify if correct data was written
-		for (iter = 0; iter < DATABASE_SIZE; iter+=4)	//DATABASE_SIZE must be checked
-		{
-			uint32_t iter_div4 = iter / sizeof(uint32_t);// Pointer of uint32_t has a step of 4 bytes
-			if(	*(base_of_database + iter_div4) != *((uint32_t*)(flash_buffer_ram + iter)) )
-			{
-				usart_send_string((uint8_t*)"\r\nWrong data written into flash memory\r\n");
-				usart_send_string((uint8_t*)"Dest add => 0x");
-				void_ptr = &str_mount;
-				conv_uint32_to_8a_hex((uintptr_t)(base_of_database + iter_div4), void_ptr);
-				usart_send_string((uint8_t*)str_mount);
-				usart_send_string((uint8_t*)", found = 0x");
-				conv_uint32_to_8a_hex(*(base_of_database + iter_div4), void_ptr);
-				usart_send_string((uint8_t*)str_mount);
-				usart_send_string((uint8_t*)". Source add => 0x");
-				conv_uint32_to_8a_hex((uintptr_t)(flash_buffer_ram + iter), void_ptr);
-				usart_send_string((uint8_t*)str_mount);
-				usart_send_string((uint8_t*)", was = 0x");
-				conv_uint32_to_8a_hex(*((uint32_t*)(flash_buffer_ram + iter)), void_ptr);
-				usart_send_string((uint8_t*)str_mount);
-				usart_send_string((uint8_t*)"\r\nLocked!");
-				return;
-			}
-		} //for (iter = 0; iter < DATABASE_SIZE; iter+=4)	//3K must be checked
-		usart_send_string((uint8_t*)"OK.\r\n\nConsistensy verification: ");*/
 	}	//if (empty_database)
 
 	//Searching a valid (useful) Database. Unused databases are marked as UNUSED_DATABASE
@@ -217,16 +192,14 @@ void database_setup(void)
 		*(base_of_database8+4) == UNUSED_DATABASE[4] &&
 		*(base_of_database8+5) == UNUSED_DATABASE[5] &&
 		*(base_of_database8+6) == UNUSED_DATABASE[6] &&
-		*(base_of_database8+7) == UNUSED_DATABASE[7] &&
-		*(base_of_database8+8) == UNUSED_DATABASE[8] &&
-		*(base_of_database8+9) == UNUSED_DATABASE[9] )
+		*(base_of_database8+7) == UNUSED_DATABASE[7] )
 		{
 			displacement += DATABASE_SIZE;
 			base_of_database8 = (uint8_t*)((uint32_t)INITIAL_DATABASE - displacement);
 		}
 		else
 		{
-			break;	//if it is here, it found a valid Database
+			break;//if it is here, it found a valid Database. Quit While.
 		}
 	}
 
@@ -244,45 +217,46 @@ void database_setup(void)
 	{
 		void_ptr = &str_mount;
 		//Display bcc
-		wait_tx_ends();
-		usart_send_string((uint8_t*)"\r\nError on Database at Base address 0x");
+		serial_wait_tx_ends();
+		serial_send_string((uint8_t*)"\r\nError on Database at Base address 0x");
 		conv_uint32_to_8a_hex((uintptr_t)(base_of_database8 + 0), void_ptr);
-		usart_send_string((uint8_t*)str_mount);
-		wait_tx_ends();
-		usart_send_string((uint8_t*)"\r\n\nBad data at address: 0x");
+		serial_send_string((uint8_t*)str_mount);
+		serial_wait_tx_ends();
+		serial_send_string((uint8_t*)"\r\n\nBad data at address: 0x");
 		conv_uint32_to_8a_hex((uintptr_t)(base_of_database8 + (DATABASE_SIZE - 2)), void_ptr);
-		usart_send_string((uint8_t*)str_mount);
-		usart_send_string((uint8_t*)": computed BCC = 0x");
+		serial_send_string((uint8_t*)str_mount);
+		serial_send_string((uint8_t*)": computed BCC = 0x");
 		conv_uint8_to_2a_hex(bcc, void_ptr);
-		usart_send_string((uint8_t*)str_mount);
-		usart_send_string((uint8_t*)", but found 0x");
+		serial_send_string((uint8_t*)str_mount);
+		serial_send_string((uint8_t*)", but found 0x");
 		conv_uint8_to_2a_hex(*(base_of_database8 + (DATABASE_SIZE - 2)), void_ptr);
-		usart_send_string((uint8_t*)str_mount);
+		serial_send_string((uint8_t*)str_mount);
 		//Display checksum
-		usart_send_string((uint8_t*)"\r\nBad data at address: 0x");
+		serial_send_string((uint8_t*)"\r\nBad data at address: 0x");
 		conv_uint32_to_8a_hex((uintptr_t)(base_of_database8 + (DATABASE_SIZE - 1)), void_ptr);
-		usart_send_string((uint8_t*)str_mount);
-		usart_send_string((uint8_t*)": computed CheckSum = 0x");
+		serial_send_string((uint8_t*)str_mount);
+		serial_send_string((uint8_t*)": computed CheckSum = 0x");
 		conv_uint8_to_2a_hex(checksum, void_ptr);
-		usart_send_string((uint8_t*)str_mount);
-		usart_send_string((uint8_t*)", but found 0x");
+		serial_send_string((uint8_t*)str_mount);
+		serial_send_string((uint8_t*)", but found 0x");
 		conv_uint8_to_2a_hex(*(base_of_database8 + (DATABASE_SIZE - 1)), void_ptr);
-		usart_send_string((uint8_t*)str_mount);
+		serial_send_string((uint8_t*)str_mount);
 		//Display version
-		usart_send_string((uint8_t*)"\r\nDatabase version ");
+		serial_send_string((uint8_t*)"\r\nDatabase version ");
 		conv_uint32_to_dec((uint32_t)(*(base_of_database8 + 0)), void_ptr);
-		usart_send_string((uint8_t*)str_mount);
-		usart_send_string((uint8_t*)".");
+		serial_send_string((uint8_t*)str_mount);
+		serial_send_string((uint8_t*)".");
 		conv_uint32_to_dec((uint32_t)(*(base_of_database8 + 1)), void_ptr);
-		usart_send_string((uint8_t*)str_mount);
-		usart_send_string((uint8_t*)"\r\n\n..  !!!Attention!!! => No new valid Database found. Using the factory default one.");
+		serial_send_string((uint8_t*)str_mount);
+		serial_send_string((uint8_t*)"\r\n\n..  !!!Attention!!! => No new valid Database found. Using the factory default one.");
 		base_of_database8 = (uint8_t*)&DEFAULT_MSX_KEYB_DATABASE_CONVERSION[0][0];
-		usart_send_string((uint8_t*)"\r\n\n..  !!!If you want to use a different mapping, please update the Database!!!\r\n\n");
+		serial_send_string((uint8_t*)"\r\n\n..  !!!If you want to use a different mapping, please update the Database!!!\r\n\n");
 	}
-	usart_send_string((uint8_t*)"..  Database OK at 0x");
+	void_ptr = &str_mount;
+	serial_send_string((uint8_t*)"..  Database OK at 0x");
 	conv_uint32_to_8a_hex((uintptr_t)(base_of_database8), void_ptr);
-	usart_send_string((uint8_t*)str_mount);
-	usart_send_string((uint8_t*)". Reading system parameters...\r\n");
+	serial_send_string((uint8_t*)str_mount);
+	serial_send_string((uint8_t*)". Reading system parameters...\r\n");
 	y_dummy 				=  *(base_of_database8 + 3) & 0x0F; //Low nibble (no keys at this column)
 	ps2numlockstate = (*(base_of_database8 + 3) & 0x10) != 0; //Bit 4
 	enable_xon_xoff = (*(base_of_database8 + 3) & 0x20) != 0; //Bit 5
@@ -302,14 +276,14 @@ void cleanupFlash(bool *sector_erased, uint16_t *attempts_erasing_sector)
 	while (*attempts_erasing_sector < MAX_ERASE_TRIES) //3 tries
 	{
 		//Information to user
-		usart_send_string((uint8_t*)"\r\nErasing flash memory...\r\nBase Address  Size  Status\r\n 0x");
+		serial_send_string((uint8_t*)"\r\nErasing flash memory...\r\nBase Address  Size  Status\r\n 0x");
 		conv_uint32_to_8a_hex(((uint32_t)FLASH_SECTOR3_BASE), (uint8_t*)&(str_mount));
-		usart_send_string((uint8_t*)str_mount);
-		usart_send_string((uint8_t*)"  ");
+		serial_send_string((uint8_t*)str_mount);
+		serial_send_string((uint8_t*)"  ");
 		conv_uint32_to_dec((uint32_t)(FLASH_SECTOR3_TOP - FLASH_SECTOR3_BASE + 1), (uint8_t*)&(str_mount));
-		usart_send_string((uint8_t*)str_mount);
-		usart_send_string((uint8_t*)" ");
-		wait_tx_ends();
+		serial_send_string((uint8_t*)str_mount);
+		serial_send_string((uint8_t*)" ");
+		serial_wait_tx_ends();
 		//Erase sector FLASH_SECTOR3_NUMBER only if not erased
 		for (uint32_t iter = 0; iter < (FLASH_SECTOR3_TOP + 1 - FLASH_SECTOR3_BASE); iter+=4)	//All sector bytes must be checked
 		{
@@ -325,7 +299,7 @@ void cleanupFlash(bool *sector_erased, uint16_t *attempts_erasing_sector)
 		//Now confirm cleaning
 		if(check_sector3_erased(sector_erased, attempts_erasing_sector))
 			break;	// this break quits "while (attempts_erasing_sector < 3) //MAX_ERASE_TRIES tries"
-		usart_send_string((uint8_t*)"\r\n");
+		serial_send_string((uint8_t*)"\r\n");
 	}	//0x800C0000 (Sector 3) while (*attempts_erasing_sector < MAX_ERASE_TRIES)
 }	//if (!gpio_get(USER_KEY_PORT, USER_KEY_PIN_ID))
 
@@ -342,18 +316,18 @@ bool check_sector3_erased(bool *sect_erased, uint16_t *attempts_erasing_sector)
 			*sect_erased = false;
 			//Information to user - continued
 			if(*attempts_erasing_sector == 1)
-				usart_send_string((uint8_t*)"Not OK at first attempt");
+				serial_send_string((uint8_t*)"Not OK at first attempt");
 			if(*attempts_erasing_sector == 2)
-				usart_send_string((uint8_t*)"Not OK at second attempt");
+				serial_send_string((uint8_t*)"Not OK at second attempt");
 			if(*attempts_erasing_sector == MAX_ERASE_TRIES)
-				usart_send_string((uint8_t*)"Not OK at third attempt\r\n");
+				serial_send_string((uint8_t*)"Not OK at third attempt\r\n");
 			break;	//quit "for (iter = 0; iter < (FLASH_SECTOR3_TOP + 1 - FLASH_SECTOR3_BASE); iter += 4)"
 		}	//if(	(*(uint32_t *)(FLASH_SECTOR3_BASE + iter)) != 0xFFFFFFFF )
 	} //for (iter = 0; iter < (FLASH_SECTOR3_TOP + 1 - FLASH_SECTOR3_BASE); iter+=4)
 	if(*sect_erased)
 	{
 		//Information to user - continued
-		usart_send_string((uint8_t*)" Successful\r\n");
+		serial_send_string((uint8_t*)" Successful\r\n");
 		//Flash Database zone cleared. Points to default (Initial) Database address
 		base_of_database = (uint32_t*)((uint32_t)INITIAL_DATABASE);
 	}	//if(!attempts_erasing_sector)
@@ -381,44 +355,74 @@ void check_flash_error(void)
 	//Read FLASH_SR (Flash status register), searching for errors
 	if(FLASH_SR & (1 << 14))	//RDERR (1 << 14): Read Protection Error (pcrop)
 	{
-		usart_send_string((uint8_t*)"RDERR: Read Protection Error (pcrop)\r\n");
+		serial_send_string((uint8_t*)"RDERR: Read Protection Error (pcrop)\r\n");
 		FLASH_SR |= (1 << 14);	//Cleared by writing 1.
 	}
 	if(FLASH_SR & FLASH_SR_PGSERR)	//PGSERR: Programming sequence error
 	{
-		usart_send_string((uint8_t*)"PGSERR: Programming sequence error\r\n");
+		serial_send_string((uint8_t*)"PGSERR: Programming sequence error\r\n");
 		FLASH_SR |= FLASH_SR_PGSERR;	//Cleared by writing 1.
 	}
 	if(FLASH_SR & FLASH_SR_PGAERR)	//PGAERR: Programming alignment error
 	{
-		usart_send_string((uint8_t*)"PGAERR: Programming alignment error\r\n");
+		serial_send_string((uint8_t*)"PGAERR: Programming alignment error\r\n");
 		FLASH_SR |= FLASH_SR_PGAERR;	//Cleared by writing 1.
 	}
 	if(FLASH_SR & FLASH_SR_WRPERR)//WRPERR: Write protection error
 	{
-		usart_send_string((uint8_t*)"WRPERR: Write protection error\r\n");
+		serial_send_string((uint8_t*)"WRPERR: Write protection error\r\n");
 		FLASH_SR |= FLASH_SR_WRPERR;	//Cleared by writing 1.
 	}
 	if(FLASH_SR & FLASH_SR_OPERR)	//OPERR: Operation error. This bit is set only if error interrupts are enabled (ERRIE = 1).
 	{
-		usart_send_string((uint8_t*)"OPERR: Operation error\r\n");
+		serial_send_string((uint8_t*)"OPERR: Operation error\r\n");
 		FLASH_SR |= FLASH_SR_OPERR;	//Cleared by writing 1.
 	}
-	wait_tx_ends();
+	serial_wait_tx_ends();
 }
 
 
 void usart_get_string_line(uint8_t *ser_inp_line, uint16_t str_max_size)
 { //Reads until CR and returns an ASCIIZ on *ser_inp_line
-	uint8_t sign = 0;
-	uint16_t iter = 0;
+	uint8_t		sign = 0;
+	uint16_t	iter = 0;
+	uint32_t	lastsysticks;
+	bool			print_message;
+	uint8_t		str_mount[STRING_MOUNT_BUFFER_SIZE];
 
+	lastsysticks = systicks;
+	print_message = true;
 redohere:
 	while(iter < str_max_size)
 	{
 		//wait until next char is available
 		while (!serial_available_get_char())
-			__asm("nop");
+		{
+			if( ((systicks - lastsysticks) % FREQ_INT_SYSTICK) == 0 )
+			{
+				sign = (MAX_TIMEOUT2RX_INTEL_HEX - (systicks - lastsysticks)) / FREQ_INT_SYSTICK;
+				if(print_message && sign < (MAX_TIMEOUT2RX_INTEL_HEX / FREQ_INT_SYSTICK))
+				{
+					serial_send_string((uint8_t*)"Timeout to start to receive Intel Hex in: ");
+					conv_uint32_to_dec((uint32_t)sign, str_mount);
+					serial_send_string(str_mount);
+					serial_send_string((uint8_t*)"s \r");
+					print_message = false;
+				}
+			}
+			else
+			{
+				print_message = true;
+			}
+			//Check timeout
+			if( (systicks - lastsysticks) > MAX_TIMEOUT2RX_INTEL_HEX )
+			{
+				//User messages
+				serial_send_string((uint8_t*)"\r\n\nTimeout to start to receive Intel Hex is reached: Reset requested by the system.\r\n");
+				reset_requested();
+			}
+		}
+		lastsysticks = systicks;
 		sign = serial_get_char();
 
 #if USART_ECHO_EN == 1
@@ -480,11 +484,11 @@ void get_valid_intelhex_file(uint8_t *ser_inp_line, uint16_t str_max_size, uint8
 		usart_get_intel_hex(ser_inp_line, str_max_size, ram_buffer);
 		if (error_intel_hex == true)
 		{
-			usart_send_string((uint8_t*)"\r\n\n\n\nERROR in Intel Hex. ERROR\r\n\nPlease resend the Intel Hex...");
+			serial_send_string((uint8_t*)"\r\n\n\n\nERROR in Intel Hex. ERROR\r\n\nPlease resend the Intel Hex...");
 		}
 		else if (abort_intelhex_reception)
 		{
-			usart_send_string((uint8_t*)"\r\n\n\n\n!!!!!INTERRUPTED!!!!!\r\n\nPlease resend the Intel Hex...");
+			serial_send_string((uint8_t*)"\r\n\n\n\n!!!!!INTERRUPTED!!!!!\r\n\nPlease resend the Intel Hex...");
 		}
 		else
 			return;
@@ -553,17 +557,17 @@ void usart_get_intel_hex(uint8_t *ser_inp_line, uint16_t str_max_size, uint8_t *
 					case 1: //01 - end-of-file record
 					{
 						//Information to user
-						usart_send_string((uint8_t*)"\r\n\nReceive concluded. It has been received ");
+						serial_send_string((uint8_t*)"\r\n\nReceive concluded. It has been received ");
 						conv_uint32_to_dec((uint32_t)(count_IHdata_record), (uint8_t*)&(str_mount));
-						usart_send_string((uint8_t*)str_mount);
-						usart_send_string((uint8_t*)" IntelHex data records,\r\nwith an amount of ");
+						serial_send_string((uint8_t*)str_mount);
+						serial_send_string((uint8_t*)" IntelHex data records,\r\nwith an amount of ");
 						conv_uint32_to_dec((uint32_t)(count_rx_intelhex_bytes), (uint8_t*)&(str_mount));
-						usart_send_string((uint8_t*)str_mount);
-						usart_send_string((uint8_t*)" data bytes.");
+						serial_send_string((uint8_t*)str_mount);
+						serial_send_string((uint8_t*)" data bytes.");
 						/*// Wait user knowledge
 						while(serial_available_get_char())
 							bin = serial_get_char();
-						usart_send_string((uint8_t*)" data bytes.\r\nPress any key to conclude...");
+						serial_send_string((uint8_t*)" data bytes.\r\nPress any key to conclude...");
 						while(!serial_available_get_char())
 							__asm("nop");
 						bin = serial_get_char();
@@ -598,7 +602,7 @@ void usart_get_intel_hex(uint8_t *ser_inp_line, uint16_t str_max_size, uint8_t *
 			else	//if (validate_intel_hex_record(ser_inp_line, intel_hex_numofdatabytes, intel_hex_type, intel_hex_address, intel_hex_localreg_data))
 			{
 				//Invalid record received
-				usart_send_string((uint8_t*)" Error: Invalid");
+				serial_send_string((uint8_t*)" Error: Invalid");
 				error_intel_hex = true;
 			}
 		} //if (validate_intel_hex_record(ser_inp_line, &intel_hex_numofdatabytes, &intel_hex_type, &intel_hex_address, &intel_hex_localreg_data[0]))
@@ -674,24 +678,24 @@ uint32_t flash_program_data(uint8_t *flash_buffer_ram)	//Local flash_buffer_ram 
 	displacement = 0;
 	base_of_database = (uint32_t*)((uint32_t)INITIAL_DATABASE);
 	//Information to user
-	usart_send_string((uint8_t*)"\r\n\nSearching for an empty ");
+	serial_send_string((uint8_t*)"\r\n\nSearching for an empty ");
 	void *void_ptr = &str_mount;
 	conv_uint32_to_dec((uint32_t)DATABASE_SIZE, void_ptr);
-	usart_send_string((uint8_t*)str_mount);
-	//usart_send_string((uint8_t*)" bytes in sector 3 of flash memory...\r\nBase Address  Size  Status\r\n");
-	usart_send_string((uint8_t*)" bytes in sector ");
+	serial_send_string((uint8_t*)str_mount);
+	//serial_send_string((uint8_t*)" bytes in sector 3 of flash memory...\r\nBase Address  Size  Status\r\n");
+	serial_send_string((uint8_t*)" bytes in sector ");
 	conv_uint32_to_dec((uint32_t)FLASH_SECTOR3_NUMBER, void_ptr);
-	usart_send_string((uint8_t*)str_mount);
-	usart_send_string((uint8_t*)" of flash memory...\r\nBase Address  Size  Status\r\n");
+	serial_send_string((uint8_t*)str_mount);
+	serial_send_string((uint8_t*)" of flash memory...\r\nBase Address  Size  Status\r\n");
 	while( (((uint32_t)INITIAL_DATABASE - displacement) >= (uint32_t)FLASH_SECTOR3_BASE) && !DBaseSizeErasedPlaceFound)
 	{
 		//Information to user
 		conv_uint32_to_8a_hex(((uint32_t)INITIAL_DATABASE - displacement), void_ptr);
-		usart_send_string((uint8_t*)" 0x");
-		usart_send_string((uint8_t*)str_mount);
-		usart_send_string((uint8_t*)"   ");
+		serial_send_string((uint8_t*)" 0x");
+		serial_send_string((uint8_t*)str_mount);
+		serial_send_string((uint8_t*)"   ");
 		conv_uint32_to_dec((uint32_t)DATABASE_SIZE, void_ptr);
-		usart_send_string((uint8_t*)str_mount);
+		serial_send_string((uint8_t*)str_mount);
 
 		DBaseSizeErasedPlaceFound = true;
 		for (iter = 0; iter < (DATABASE_SIZE/sizeof(uint32_t)); iter++)
@@ -699,7 +703,7 @@ uint32_t flash_program_data(uint8_t *flash_buffer_ram)	//Local flash_buffer_ram 
 			//Searching for a DATABASE_SIZE room in the address range of flash sector FLASH_SECTOR3_NUMBER to acomodate a new Database image
 			if(	*(base_of_database + iter) != 0xFFFFFFFF )
 			{
-				usart_send_string((uint8_t*)"  Not available\r\n");
+				serial_send_string((uint8_t*)"  Not available\r\n");
 				DBaseSizeErasedPlaceFound = false;
 				displacement += DATABASE_SIZE;
 				base_of_database = (uint32_t*)((uint32_t)INITIAL_DATABASE - displacement);
@@ -709,7 +713,7 @@ uint32_t flash_program_data(uint8_t *flash_buffer_ram)	//Local flash_buffer_ram 
 		if(iter >= (DATABASE_SIZE/sizeof(uint32_t)) && DBaseSizeErasedPlaceFound)
 		{
 			//DATABASE_SIZE page is free on "base_of_database" address
-			usart_send_string((uint8_t*)"  Ok!\r\n");
+			serial_send_string((uint8_t*)"  Ok!\r\n");
 		}
 	}	//while( (((uint32_t)INITIAL_DATABASE - displacement) >= (uint32_t)FLASH_SECTOR3_BASE) && !DBaseSizeErasedPlaceFound)
 
@@ -724,24 +728,24 @@ uint32_t flash_program_data(uint8_t *flash_buffer_ram)	//Local flash_buffer_ram 
 	
 	//Programming Flash Memory
 	//Information to user
-	usart_send_string((uint8_t*)"\r\nProgramming flash memory...\r\nDest address  Size  Origin RAM address\r\n");
+	serial_send_string((uint8_t*)"\r\nProgramming flash memory...\r\nDest address  Size  Origin RAM address\r\n");
 	uintptr_t base_of_database_num = (uintptr_t)base_of_database;	//Convert from pointer to integer
 	void_ptr = &str_mount;
 	conv_uint32_to_8a_hex(((uint32_t)base_of_database_num), void_ptr);
-	usart_send_string((uint8_t*)" 0x");
-	usart_send_string((uint8_t*)str_mount);
-	usart_send_string((uint8_t*)"   ");
+	serial_send_string((uint8_t*)" 0x");
+	serial_send_string((uint8_t*)str_mount);
+	serial_send_string((uint8_t*)"   ");
 	conv_uint32_to_dec((uint32_t)DATABASE_SIZE, void_ptr);
-	usart_send_string((uint8_t*)str_mount);
-	usart_send_string((uint8_t*)"  0x");
+	serial_send_string((uint8_t*)str_mount);
+	serial_send_string((uint8_t*)"  0x");
 	conv_uint32_to_8a_hex(((uintptr_t)flash_buffer_ram), void_ptr);
-	usart_send_string((uint8_t*)str_mount);
-	wait_tx_ends();
+	serial_send_string((uint8_t*)str_mount);
+	serial_wait_tx_ends();
 	check_flash_locked();
 	flash_program((uint32_t)base_of_database_num, flash_buffer_ram, DATABASE_SIZE);
 	check_flash_error();
 
-	usart_send_string((uint8_t*)"\r\n\nVerification of written data:");
+	serial_send_string((uint8_t*)"\r\n\nVerification of written data:");
 	//verify if correct data was written
 	for (iter = 0; iter < (DATABASE_SIZE); iter += 4)	//All DATABASE_SIZE must be checked
 	{
@@ -750,47 +754,47 @@ uint32_t flash_program_data(uint8_t *flash_buffer_ram)	//Local flash_buffer_ram 
 		{
 			if(*(base_of_database + iter) == 0xFFFFFFFF)
 			{
-				usart_send_string((uint8_t*)"\r\n(RAM buffer address = 0x");
+				serial_send_string((uint8_t*)"\r\n(RAM buffer address = 0x");
 				conv_uint32_to_8a_hex((uintptr_t)(flash_buffer_ram + iter), void_ptr);
-				usart_send_string((uint8_t*)str_mount);
-				usart_send_string((uint8_t*)". Was = 0x");
+				serial_send_string((uint8_t*)str_mount);
+				serial_send_string((uint8_t*)". Was = 0x");
 				conv_uint32_to_8a_hex(*(base_of_database + iter_div4), void_ptr);
-				usart_send_string((uint8_t*)str_mount);
-				usart_send_string((uint8_t*)", while flash address 0x");
+				serial_send_string((uint8_t*)str_mount);
+				serial_send_string((uint8_t*)", while flash address 0x");
 				conv_uint32_to_8a_hex((uintptr_t)(base_of_database + iter_div4), void_ptr);
-				usart_send_string((uint8_t*)str_mount);
-				usart_send_string((uint8_t*)" remains erased.\r\nLocked!");
-				wait_tx_ends();
+				serial_send_string((uint8_t*)str_mount);
+				serial_send_string((uint8_t*)" remains erased.\r\nLocked!");
+				serial_wait_tx_ends();
 			}
 			else
 			{
-				usart_send_string((uint8_t*)"\r\nWrong data written into flash memory:\r\n");
-				usart_send_string((uint8_t*)"Dest add => 0x");
+				serial_send_string((uint8_t*)"\r\nWrong data written into flash memory:\r\n");
+				serial_send_string((uint8_t*)"Dest add => 0x");
 				void_ptr = &str_mount;
 				conv_uint32_to_8a_hex((uintptr_t)(base_of_database + iter_div4), void_ptr);
-				usart_send_string((uint8_t*)str_mount);
-				usart_send_string((uint8_t*)", found = 0x");
+				serial_send_string((uint8_t*)str_mount);
+				serial_send_string((uint8_t*)", found = 0x");
 				conv_uint32_to_8a_hex(*(base_of_database + iter_div4), void_ptr);
-				usart_send_string((uint8_t*)str_mount);
-				usart_send_string((uint8_t*)". Source add => 0x");
+				serial_send_string((uint8_t*)str_mount);
+				serial_send_string((uint8_t*)". Source add => 0x");
 				conv_uint32_to_8a_hex((uintptr_t)(flash_buffer_ram + iter), void_ptr);
-				usart_send_string((uint8_t*)str_mount);
-				usart_send_string((uint8_t*)", was = 0x");
+				serial_send_string((uint8_t*)str_mount);
+				serial_send_string((uint8_t*)", was = 0x");
 				conv_uint32_to_8a_hex(*((uint32_t*)(flash_buffer_ram + iter)), void_ptr);
-				usart_send_string((uint8_t*)str_mount);
-				usart_send_string((uint8_t*)"\r\nLocked!");
+				serial_send_string((uint8_t*)str_mount);
+				serial_send_string((uint8_t*)"\r\nLocked!");
 			}
 			return FLASH_WRONG_DATA_WRITTEN;
 		}	//if(	*(base_of_database + iter_div4) != *((uint32_t*)(flash_buffer_ram + iter)) )
 	} //for (iter = 0; iter < DATABASE_SIZE; iter+=4)	//3K must be checked
-	usart_send_string((uint8_t*)" Succesfully done!");
+	serial_send_string((uint8_t*)" Succesfully done!");
 
 	//if flash sector FLASH_SECTOR3_NUMBER was just erased, there is no need to "invalidate" former Database,
 	//as there is no former Database
 	base_of_database_num = (uintptr_t)base_of_database;	//Convert from pointer to integer
 	if (base_of_database_num != INITIAL_DATABASE)
 	{
-		usart_send_string((uint8_t*)"\r\n\nNulling former Database...\r\n");
+		serial_send_string((uint8_t*)"\r\n\nNulling former Database...\r\n");
 
 		base_of_database += (DATABASE_SIZE /sizeof(uint32_t));	//points to former Database
 		base_of_database_num = (uintptr_t)base_of_database;			//Convert from pointer to integer
@@ -799,7 +803,7 @@ uint32_t flash_program_data(uint8_t *flash_buffer_ram)	//Local flash_buffer_ram 
 		for(iter = 0; iter < sizeof(UNUSED_DATABASE); iter ++)
 		{
 			uint8_t ch = UNUSED_DATABASE[iter];
-			wait_tx_ends();
+			serial_wait_tx_ends();
 			check_flash_locked();
 			flash_program_byte(base_of_database_num + iter, ch);
 			flash_wait_for_last_operation();
@@ -807,26 +811,26 @@ uint32_t flash_program_data(uint8_t *flash_buffer_ram)	//Local flash_buffer_ram 
 			//Now check written data
 			if((*(uint8_t*)(base_of_database_num+iter)) == ch)
 			{
-				//usart_send_string((uint8_t*)" <= Ok (\r\n");
-				/*usart_send_string((uint8_t*)" <= Ok (0x");
+				//serial_send_string((uint8_t*)" <= Ok (\r\n");
+				/*serial_send_string((uint8_t*)" <= Ok (0x");
 				conv_uint8_to_2a_hex(ch, void_ptr);
-				usart_send_string((uint8_t*)str_mount);
-				usart_send_string((uint8_t*)")\r\n");*/
+				serial_send_string((uint8_t*)str_mount);
+				serial_send_string((uint8_t*)")\r\n");*/
 			}
 			else	//if (*(uint8_t*)(base_of_database_num+iter) = ch)
 			{
 				//Information to user
-				usart_send_string((uint8_t*)"Address: 0x");
+				serial_send_string((uint8_t*)"Address: 0x");
 				conv_uint32_to_8a_hex((uintptr_t)(base_of_database_num + iter), void_ptr);
-				usart_send_string((uint8_t*)str_mount);
-				usart_send_string((uint8_t*)" <= Wrong (0x");
+				serial_send_string((uint8_t*)str_mount);
+				serial_send_string((uint8_t*)" <= Wrong (0x");
 				conv_uint8_to_2a_hex((*(uint8_t*)(base_of_database_num+iter)), void_ptr);
 				conv_uint8_to_2a_hex(ch, void_ptr);
-				usart_send_string((uint8_t*)str_mount);
-				usart_send_string((uint8_t*)" instead of 0x");
+				serial_send_string((uint8_t*)str_mount);
+				serial_send_string((uint8_t*)" instead of 0x");
 				conv_uint8_to_2a_hex(ch, void_ptr);
-				usart_send_string((uint8_t*)str_mount);
-				usart_send_string((uint8_t*)")\r\n");
+				serial_send_string((uint8_t*)str_mount);
+				serial_send_string((uint8_t*)")\r\n");
 				flash_lock();
 				return FLASH_WRONG_DATA_WRITTEN;
 			}	//if (*(uint8_t*)(base_of_database+iter) = ch)
@@ -834,9 +838,9 @@ uint32_t flash_program_data(uint8_t *flash_buffer_ram)	//Local flash_buffer_ram 
 	}	//if (base_of_database_num != INITIAL_DATABASE)
 	else
 	{
-		usart_send_string((uint8_t*)"\r\n\nNo need to null formmer Database, as it is the first one.\r\n");
+		serial_send_string((uint8_t*)"\r\n\nNo need to null formmer Database, as it is the first one.\r\n");
 	}	//else //if (base_of_database_num != INITIAL_DATABASE)
-	usart_send_string((uint8_t*)"\r\nSuccessful!\r\n\nNow, please TURN OFF to plug the PS/2 keyboard!");
+	serial_send_string((uint8_t*)"\r\nSuccessful!\r\n\nNow, please TURN OFF to plug the PS/2 keyboard!");
 	flash_lock();
 	return RESULT_OK;
 }	//uint32_t flash_program_data(uint32_t *flash_buffer_ram)
@@ -849,13 +853,13 @@ int flashF4_rw(void)	//was main. It is int to allow simulate as a single module
 	uint8_t flash_buffer_ram[DATABASE_SIZE]; //Local variable, in aim to not consume resources in the main functional machine
 	void *ptr_flash_buffer_ram;
 
-	usart_send_string((uint8_t*)"Ready to update the Database! To do so now, please\r\n");
-	usart_send_string((uint8_t*)"send the new Database file in Intel Hex format!");
-	usart_send_string((uint8_t*)"\r\n\nOr turn off now...");
+	serial_send_string((uint8_t*)"Ready to update the Database! To do so now, please\r\n");
+	serial_send_string((uint8_t*)"send the new Database file in Intel Hex format!");
+	serial_send_string((uint8_t*)"\r\n\nOr turn off now...\r\n");
 	get_valid_intelhex_file(&str_mount[0], STRING_MOUNT_BUFFER_SIZE, &flash_buffer_ram[0]);
 	
 	ptr_flash_buffer_ram = flash_buffer_ram;
-	wait_tx_ends();
+	serial_wait_tx_ends();
 	result = flash_program_data(ptr_flash_buffer_ram);
 	
 	switch(result)
@@ -866,12 +870,12 @@ int flashF4_rw(void)	//was main. It is int to allow simulate as a single module
 		break;
 
 	default: //wrong flags' values in Flash Status Register (FLASH_SR)
-		usart_send_string((uint8_t*)"\r\nWrong value of FLASH_SR: ");
+		serial_send_string((uint8_t*)"\r\nWrong value of FLASH_SR: ");
 		conv_uint32_to_8a_hex(result, str_mount);
-		usart_send_string(&str_mount[0]);
+		serial_send_string(&str_mount[0]);
 		break;
 	}
 	//send end_of_line
-	usart_send_string((uint8_t*)"\r\n");
+	serial_send_string((uint8_t*)"\r\n");
 	return result;
 }	//int flashF4_rw(void)	//was main. It is int to allow simulate as a single module

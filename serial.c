@@ -29,9 +29,7 @@ uint8_t tx_ring_buffer[SERIAL_RING_BUFFER_SIZE];
 uint8_t rx_ring_buffer[SERIAL_RING_BUFFER_SIZE];
 
 //Prototypes:
-static uint16_t ring_avail_get_ch(struct ring *ring);
 uint16_t ring_tx_put_ch(uint8_t);
-uint8_t ring_rx_get_ch(void);
 int _write(int, char*, int);
 int _read(int, char*, int);
 void isr_serial(void);
@@ -161,7 +159,7 @@ uint16_t serial_put_char(uint8_t ch)
 // Put an ASCIIZ (uint8_t) string on serial buffer.
 // No return  and no blocking function if there is enough space on USART_PORT TX buffer, otherwise,
 // wait until buffer is filled.
-void usart_send_string(uint8_t *string)
+void serial_send_string(uint8_t *string)
 {
 	uint16_t iter = 0;
 	do
@@ -175,7 +173,7 @@ void usart_send_string(uint8_t *string)
 
 //Ready to be used outside this module.
 // Wait until Transmission is finished.
-void wait_tx_ends(void)
+void serial_wait_tx_ends(void)
 {
 	while ((USART_CR1(USART_PORT) & USART_CR1_TXEIE) != 0)
 		__asm("NOP");			//Wait here while there is TX Interrupt enable
@@ -226,43 +224,17 @@ uint16_t ring_tx_put_ch(uint8_t ch)
 	qty_in_buffer = ring_put_ch(&tx_ring, ch);
 	if (qty_in_buffer == 1)
 	{
-		// Enable Transmit request
+		// Enable Transmit request for the first one
 		usart_enable_tx_interrupt(USART_PORT);
 	}
-	if (enable_xon_xoff)
-	{
-		if (qty_in_buffer >= (uint16_t)X_OFF_TRIGGER)
-		{
-			xon_condition = false;
-			if (!xoff_condition)										//To send X_OFF only once
-			{
-				xoff_condition = true;
-				// Enable Transmit request
-				xonoff_sendnow = true;
-				usart_enable_tx_interrupt(USART_PORT);//Force Enable transmission request
-			}
-		}
-		//else if (qty_in_buffer <= (uint16_t)X_ON_TRIGGER)
-		else if (qty_in_buffer <= X_ON_TRIGGER)
-		{
-			xoff_condition = false;
-			if (!xon_condition)											//To send X_ON only once
-			{
-				xon_condition = true;
-				// Enable Transmit request
-				xonoff_sendnow = true;
-				usart_enable_tx_interrupt(USART_PORT);//Force Enable transmission request
-			}  //if (!xon_condition)
-		} //else if (*qty_in_buffer <= (uint16_t)X_ON_TRIGGER)
-	} //if (enable_xon_xoff)
 
 	return qty_in_buffer;
 }
 
 
 //Used as an internal function.
-//Returns true if there is a char available to read in the ring (both TX and RX) or false if not.
-static uint16_t ring_avail_get_ch(struct ring *ring)
+//Returns the number of chars available in the ring (both TX and RX) or 0 if none.
+uint16_t ring_avail_get_ch(struct ring *ring)
 {
 	uint16_t output;
 	output = (SERIAL_RING_BUFFER_SIZE - ring->get_ptr + ring->put_ptr) & (SERIAL_RING_BUFFER_SIZE - 1);
@@ -273,7 +245,7 @@ static uint16_t ring_avail_get_ch(struct ring *ring)
 //Used as an internal function.
 //It returns char when it is available or 0xFFFF when no one is available
 //Used on both TX and RX buffers.
-static uint16_t ring_get_ch(struct ring *ring, uint16_t *qty_in_buffer)
+uint16_t ring_get_ch(struct ring *ring, uint16_t *qty_in_buffer)
 {
 	uint16_t i = ring->get_ptr;
 	if(i == ring->put_ptr)
@@ -570,6 +542,7 @@ void usart2_isr(void)
 
 void isr_serial(void)
 {
+	uint16_t qty_in_buffer;
 	//Clear RX errors: IDLE (bit 4), ORE (3), Noise detected (2), FRE (1), Parity Error (0)
 	//A read to the USART_SR register followed by a read to the USART_DR register
 	if ((USART_SR(USART_PORT) && 0B11111) != 0)
@@ -581,13 +554,39 @@ void isr_serial(void)
 	if (((USART_CR1(USART_PORT) & USART_CR1_RXNEIE) != 0) && ((USART_SR(USART_PORT) & USART_SR_RXNE) != 0))
 	{
 		// Retrieve the data from the peripheral and put in rx_ring.
-		ring_put_ch(&rx_ring, (uint8_t)usart_recv(USART_PORT));
+		qty_in_buffer = ring_put_ch(&rx_ring, (uint8_t)usart_recv(USART_PORT));
+		if (enable_xon_xoff)
+		{
+			if (qty_in_buffer >= (uint16_t)X_OFF_TRIGGER)
+			{
+				xon_condition = false;
+				if (!xoff_condition)										//To send X_OFF only once
+				{
+					xoff_condition = true;
+					// Enable Transmit request
+					xonoff_sendnow = true;
+					usart_enable_tx_interrupt(USART_PORT);//Force Enable transmission request
+				}
+			}
+			//else if (qty_in_buffer <= (uint16_t)X_ON_TRIGGER)
+			else if (qty_in_buffer <= X_ON_TRIGGER)
+			{
+				xoff_condition = false;
+				if (!xon_condition)											//To send X_ON only once
+				{
+					xon_condition = true;
+					// Enable Transmit request
+					xonoff_sendnow = true;
+					usart_enable_tx_interrupt(USART_PORT);//Force Enable transmission request
+				}  //if (!xon_condition)
+			} //else if (*qty_in_buffer <= (uint16_t)X_ON_TRIGGER)
+		} //if (enable_xon_xoff)
 	}
 
 	// Check if it was called because of TXE.
 	if(((USART_CR1(USART_PORT) & USART_CR1_TXEIE)!=0) && ((USART_SR(USART_PORT) & USART_SR_TXE)!=0))
 	{
-		uint16_t data = 0, qty_in_buffer;
+		uint16_t data = 0;
 
 		if (xonoff_sendnow)
 		{

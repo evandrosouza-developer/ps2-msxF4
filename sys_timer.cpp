@@ -21,18 +21,18 @@ volatile uint16_t ticks_keys;
 volatile uint16_t last_ps2_fails=0;
 volatile uint16_t fail_count;
 extern bool ps2_keyb_detected;										//Declared on ps2handl.c
-extern bool update_num_lock_led, ps2numlockstate;	//Declared on msxmap.cpp
+extern bool update_ps2_leds, ps2numlockstate;			//Declared on msxmap.cpp
 
 
 void systick_setup(void)
 {
 	//Make sure systick doesn't interrupt PS/2 protocol bitbang action
-	nvic_set_priority(NVIC_SYSTICK_IRQ, 100);
+	nvic_set_priority(NVIC_SYSTICK_IRQ, IRQ_PRI_SYSTICK);
 
 	/* 84MHz / 8 => 10500000 counts per second */
 	/* 10500000 / 30(ints per second) = 350000 systick reload - every 33,3ms one interrupt */
 	/* SysTick interrupt every N clock pulses: set reload to N-1 */
-	systick_set_reload(((rcc_apb2_frequency * 2)/30)-1);
+	systick_set_reload(((rcc_apb2_frequency * 2) / FREQ_INT_SYSTICK) - 1);
 	systick_set_clocksource(STK_CSR_CLKSOURCE_AHB);
 	
 	systicks = 0; //systick_clear
@@ -76,14 +76,12 @@ void sys_tick_handler(void) // f=30Hz (Each 33,33ms)
 	if (ps2_keyb_detected == true)
 	{
 		//Queue keys processing:
-		ticks_keys++;
-		if(ticks_keys > MAX_TICKS_KEYS)
-			ticks_keys = 0;
+		ticks_keys = (ticks_keys++ & (MAX_TICKS_KEYS - 1));
 		if (!ticks_keys)
 		{
 			msxmap objeto;
 			objeto.msxqueuekeys();
-		}	//if (!ticks_keys)
+		}
 	}
 
 	if(fail_count!=last_ps2_fails)

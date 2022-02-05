@@ -34,6 +34,7 @@
 #include "dbasemgt.h"
 #include "SpecialFaultHandlers.h"
 #include "port_def.h"
+#include "cdcacm.h"
 
 //#define DO_PRAGMA(x) _Pragma (#x)
 //#define TODO(x) DO_PRAGMA(message (#x))
@@ -42,16 +43,18 @@
 
 //Variáveis globais
 extern uint32_t systicks;													//Declared on sys_timer.cpp
+extern bool mount_scancode_OK; 										//Declared on ps2handl.c
 extern bool ps2_keyb_detected;										//Declared on ps2handl.c
 extern bool ps2numlockstate;											//Declared on ps2handl.c
-extern bool command_ok;														//Declared on ps2handl.c
-extern bool update_ps2_leds;											//Declared on msxmap.cpp
+extern bool command_ok, ps2int_RX_bit_idx;				//Declared on ps2handl.c
+extern bool caps_state, kana_state;								//Declared on ps2handl.c
+extern bool caps_former, kana_former;							//Declared on ps2handl.c
+extern volatile bool update_ps2_leds;							//Declared on ps2handl.c
 extern bool compatible_database;									//Declared on msxmap.cpp
 extern uint8_t scancode[4];												//Declared on msxmap.cpp
 extern uint32_t formerscancode;										//Declared on msxmap.cpp
-extern bool mount_scancode_OK; 										//Declared on ps2handl.c
-bool caps_state, kana_state;
-bool caps_former, kana_former;
+extern bool do_next_keep_alive;										//Declared on msxmap.cpp
+extern char serial_no[LEN_SERIAL_No + 1];			//Declared on cdcacm.c
 
 
 int main(void)
@@ -73,41 +76,49 @@ int main(void)
 	//Minimize interferencies from unused pins left open
 	put_pullups_on_non_used_pins();
 
+	//Get Serial number based on unique microcontroller factory masked number
+	serialno_read(serial_no);
+
 	serial_setup();
 
 	//User messages
-	usart_send_string((uint8_t*)"\r\n\n\nPS/2 Keyboard Adapter for MSX, based on STM32F401\r\nFirmware built on ");
-	usart_send_string((uint8_t*)__DATE__);
-	usart_send_string((uint8_t*)" ");
-	usart_send_string((uint8_t*)__TIME__);
-	usart_send_string((uint8_t*)"\r\n\nBooting ...\r\n\n");
-
+	serial_send_string((uint8_t*)"\r\n\n\nPS/2 keyboard Interface for MSX, based on STM32F401\r\nSerial number ");
+	serial_send_string((uint8_t*)serial_no);
+	serial_send_string((uint8_t*)"\r\nFirmware built on ");
+	serial_send_string((uint8_t*)__DATE__);
+	serial_send_string((uint8_t*)" ");
+	serial_send_string((uint8_t*)__TIME__);
+	serial_send_string((uint8_t*)"\r\n\nBooting ...\r\n\n");
 
 	//User messages
-	usart_send_string((uint8_t*)"PS/2 Interface powered up.\r\n\nConfiguring:\r\n");
-	usart_send_string((uint8_t*)". ARM System Timer;\r\n");
+	serial_send_string((uint8_t*)"PS/2 Interface powered up.\r\n\nConfiguring:\r\n");
+	serial_send_string((uint8_t*)". ARM System Timer;\r\n");
 
 	systick_setup();
 	
+	// Turn on the Independent WatchDog Timer
+	iwdg_set_period_ms(67);	// 2 x sys_timer
+	iwdg_start();
+
 	//User messages
-	usart_send_string((uint8_t*)". High resolution Timer 2;\r\n");
+	serial_send_string((uint8_t*)". High resolution Timer;\r\n");
 
 	// Now configure High Resolution Timer for PS/2 Clock interrupts (via CC) and micro second Delay
-	tim2_setup();
+	tim_setup(TIM2);
 
 	//User messages
-	usart_send_string((uint8_t*)". PS/2 Port: Waiting up to 2.5s (75 ticks) with powered on keyboard\r\n");
-	usart_send_string((uint8_t*)"  to proceed BAT:\r\n");
+	serial_send_string((uint8_t*)". PS/2 Port: Waiting up to 2.5s (75 ticks) with powered on keyboard\r\n");
+	serial_send_string((uint8_t*)"  to proceed BAT:\r\n");
 
 	ps2_keyb_detect();
 
 	//User messages
-	usart_send_string((uint8_t*)". Database with know-how to manage and interface PS/2 Keyboard to MSX;\r\n");
+	serial_send_string((uint8_t*)". Database with know-how to manage and interface PS/2 Keyboard to MSX;\r\n");
 	//Check the Database version, get y_dummy, ps2numlockstate and enable_xon_xoff
 	database_setup();
 
 	//User messages
-	usart_send_string((uint8_t*)". 5V compatible pin ports and interrupts to interface to MSX.\r\n");
+	serial_send_string((uint8_t*)". 5V compatible pin ports and interrupts to interface to MSX.\r\n");
 
 	msxmap object;
 	object.msx_interface_setup();
@@ -134,7 +145,7 @@ int main(void)
 	}
 
 	//User messages
-	usart_send_string((uint8_t*)"\r\nBoot complete. Be welcome!\r\n");
+	serial_send_string((uint8_t*)"\r\nBoot complete. Be welcome!\r\n");
 
 	//Test keyboard leds (Jhonson Counter = for humans)
 	uint32_t systicks_base = systicks;
@@ -167,15 +178,10 @@ int main(void)
 		__asm("nop");
 
 
-	// Turn on the Independent WatchDog Timer
-	iwdg_set_period_ms(67);	// 2 x sys_timer
-	iwdg_start();
-
-
 	/*********************************************************************************************/
 	/************************************** Main Loop ********************************************/
 	/*********************************************************************************************/
-	uint32_t *ptr_scancode = (uint32_t*)&scancode[0];	//To use scancode[0]..[3] as a (uint32_t*)
+	uint32_t* ptr_scancode = (uint32_t*)&scancode[0];
 	for(;;)
 	{
 		//The first functionality running in the main loop
@@ -189,21 +195,21 @@ int main(void)
 			{
 				//Serial message the keyboard change
 				/*uint8_t mountstring[3];
-				usart_send_string((uint8_t*)"Bytes qty=");
+				serial_send_string((uint8_t*)"Bytes qty=");
 				conv_uint8_to_2a_hex(scancode[0], &mountstring[0]);
-				usart_send_string(&mountstring[0]);
-				usart_send_string((uint8_t*)"; Scan code=");
+				serial_send_string(&mountstring[0]);
+				serial_send_string((uint8_t*)"; Scan code=");
 				conv_uint8_to_2a_hex(scancode[1], &mountstring[0]);
-				usart_send_string(&mountstring[0]);
-				usart_send_string((uint8_t*)"; ");
+				serial_send_string(&mountstring[0]);
+				serial_send_string((uint8_t*)"; ");
 				conv_uint8_to_2a_hex(scancode[2], &mountstring[0]);
-				usart_send_string(&mountstring[0]);
-				usart_send_string((uint8_t*)"; ");
+				serial_send_string(&mountstring[0]);
+				serial_send_string((uint8_t*)"; ");
 				conv_uint8_to_2a_hex(scancode[3], &mountstring[0]);
-				usart_send_string(&mountstring[0]);
-				usart_send_string((uint8_t*)"\r\n"); */
+				serial_send_string(&mountstring[0]);
+				serial_send_string((uint8_t*)"\r\n"); */
 				//Toggle led each keyboard change (both new presses and releases).
-				gpio_toggle(GPIOC, GPIO13); //Toggle led to sinalize a scan code be sending to convert2msx
+				gpio_toggle(GPIOC, GPIO13); //Toggle led to sinalize a scan code is beeing send to convert2msx
 				// Do the MSX search and conversion
 				msxmap objeto;
 				objeto.convert2msx();
@@ -215,14 +221,26 @@ int main(void)
 			mount_scancode_OK = false;
 		}	//if (mount_scancode())
 
+		//If keyboard is not responding to commands, reinit it through reset
+		if(!(systicks & (uint32_t)0x7F))
+		{	//each ~4s (128 * 1/30)
+			if(do_next_keep_alive)	//when time comes up, do it just once
+			{
+				do_next_keep_alive = false;
+				if(!keyboard_check_alive())
+				{
+					//User messages
+					serial_send_string((uint8_t*)"Keyboard is non responsive (KeepAlive): Reset requested by the system.\r\n");
+					reset_requested();
+				}
+			}
+		}
+		else
+			do_next_keep_alive = true;
+
 		//The second functionality running in main loop: Update the keyboard leds
-		//Check MSX CAPS and Kana status update
-		caps_state = gpio_get(CAPSLOCK_port, CAPSLOCK_pin_id);
-		kana_state = gpio_get(KANA_port, KANA_pin_id);
-		if(	command_ok									&&		//Only does led update when the previous one is concluded
-				(update_ps2_leds 						||
-				(kana_state != kana_former)	|| 
-				(caps_state != caps_former) ) )
+		if(	command_ok	&&		//Only does led update when the previous one is concluded
+				update_ps2_leds )
 		{
 			update_ps2_leds = false;
 			caps_former = caps_state;
@@ -234,7 +252,11 @@ int main(void)
 		while(serial_available_get_char())
 		{
 			uint8_t ch = serial_get_char();
-			serial_put_char(ch);
+			//Don't send X_OFF to avoid to lock the remote terminal, if it has X_ON/X_OFF enabled
+			if(ch != X_OFF)
+				serial_put_char(ch);
+			else
+				serial_send_string((uint8_t*)"<X_OFF>");
 		}
 	}	//for(;;)
 

@@ -84,10 +84,11 @@ void usage_fault_handler(void)	//No need to declare prototype because it was alr
 // From Joseph Yiu, minor edits by FVH
 // hard fault handler in C,
 // with stack frame location as input parameter
+// called from HardFault_Handler in file HardFault_Handler.s
 void c_hard_fault_handler (unsigned int * hardfault_args)
 {
 #ifndef USE_PRINTF
-	usart_send_string((uint8_t*)"\r\n\n[Hard fault handler - all numbers in hex]\r\nR0 = 0x");
+	serial_send_string((uint8_t*)"\r\n\n[Hard fault handler - all numbers in hex]\r\nR0 = 0x");
 #else
 	printf ("\n\n[Hard fault handler - all numbers in hex]\n");
 #endif
@@ -98,7 +99,7 @@ void c_hard_fault_handler (unsigned int * hardfault_args)
 void c_mem_manage_handler (unsigned int * hardfault_args)
 {
 #ifndef USE_PRINTF
-	usart_send_string((uint8_t*)"\r\n\n[Memory manage handler - all numbers in hex]\r\nR0 = 0x");
+	serial_send_string((uint8_t*)"\r\n\n[Memory manage handler - all numbers in hex]\r\nR0 = 0x");
 #else
 	printf ("\n\n[Memory manage handler - all numbers in hex]\n");
 #endif
@@ -109,7 +110,7 @@ void c_mem_manage_handler (unsigned int * hardfault_args)
 void c_bus_fault_handler (unsigned int * hardfault_args)
 {
 #ifndef USE_PRINTF
-	usart_send_string((uint8_t*)"\r\n\n[Bus fault handler - all numbers in hex]\r\nR0 = 0x");
+	serial_send_string((uint8_t*)"\r\n\n[Bus fault handler - all numbers in hex]\r\nR0 = 0x");
 #else
 	printf ("\n\n[Bus fault handler - all numbers in hex]\n");
 #endif
@@ -120,7 +121,7 @@ void c_bus_fault_handler (unsigned int * hardfault_args)
 void c_usage_fault_handler (unsigned int * hardfault_args)
 {
 #ifndef USE_PRINTF
-	usart_send_string((uint8_t*)"\r\n\n[Usage fault handler - all numbers in hex]\r\nR0 = 0x");
+	serial_send_string((uint8_t*)"\r\n\n[Usage fault handler - all numbers in hex]\r\nR0 = 0x");
 #else
 	printf ("\n\n[Usage fault handler - all numbers in hex]\n");
 #endif
@@ -155,102 +156,102 @@ void common_code_fault_handler (unsigned int * hardfault_args)
 
 #ifndef USE_PRINTF
 	conv_uint32_to_8a_hex((uint32_t)stacked_r0, void_ptr);
-	usart_send_string((uint8_t*)str_mount);
+	serial_send_string((uint8_t*)str_mount);
 #else
 	printf ("R0 = %x\n", stacked_r0);
 #endif
 #ifndef USE_PRINTF
-	usart_send_string((uint8_t*)"\r\nR1 = 0x");
+	serial_send_string((uint8_t*)"\r\nR1 = 0x");
 	conv_uint32_to_8a_hex((uint32_t)stacked_r1, void_ptr);
-	usart_send_string((uint8_t*)str_mount);
+	serial_send_string((uint8_t*)str_mount);
 #else
 	printf ("R1 = %x\n", stacked_r1);
 #endif
 #ifndef USE_PRINTF
-	usart_send_string((uint8_t*)"\r\nR2 = 0x");
+	serial_send_string((uint8_t*)"\r\nR2 = 0x");
 	conv_uint32_to_8a_hex((uint32_t)stacked_r2, void_ptr);
-	usart_send_string((uint8_t*)str_mount);
+	serial_send_string((uint8_t*)str_mount);
 #else
 	printf ("R2 = %x\n", stacked_r2);
 #endif
 #ifndef USE_PRINTF
-	usart_send_string((uint8_t*)"\r\nR3 = 0x");
+	serial_send_string((uint8_t*)"\r\nR3 = 0x");
 	conv_uint32_to_8a_hex((uint32_t)stacked_r3, void_ptr);
-	usart_send_string((uint8_t*)str_mount);
+	serial_send_string((uint8_t*)str_mount);
 #else
 	printf ("R3 = %x\n", stacked_r3);
 #endif
 #ifndef USE_PRINTF
-	usart_send_string((uint8_t*)"\r\nR12 = 0x");
+	serial_send_string((uint8_t*)"\r\nR12 = 0x");
 	conv_uint32_to_8a_hex((uint32_t)stacked_r12, void_ptr);
-	usart_send_string((uint8_t*)str_mount);
+	serial_send_string((uint8_t*)str_mount);
 #else
 	printf ("R12 = %x\n", stacked_r12);
 #endif
 #ifndef USE_PRINTF
-	usart_send_string((uint8_t*)"\r\nLR [R14] = 0x");
+	serial_send_string((uint8_t*)"\r\nLR [R14] = 0x");
 	conv_uint32_to_8a_hex((uint32_t)stacked_lr, void_ptr);
-	usart_send_string((uint8_t*)str_mount);
+	serial_send_string((uint8_t*)str_mount);
 #else
 	printf ("LR [R14] = %x  subroutine call return address\n", stacked_lr);
 #endif
 #ifndef USE_PRINTF
-	usart_send_string((uint8_t*)"  subroutine call return address\r\nPC [R15] = 0x");
+	serial_send_string((uint8_t*)"  subroutine call return address\r\nPC [R15] = 0x");
 	conv_uint32_to_8a_hex((uint32_t)stacked_pc, void_ptr);
-	usart_send_string((uint8_t*)str_mount);
+	serial_send_string((uint8_t*)str_mount);
 #else
 	printf ("PC [R15] = %x  program counter\n", stacked_pc);
 #endif
 #ifndef USE_PRINTF
-	usart_send_string((uint8_t*)"  program counter\r\nPSR = 0x");
+	serial_send_string((uint8_t*)"  program counter\r\nPSR = 0x");
 	conv_uint32_to_8a_hex((uint32_t)stacked_psr, void_ptr);
-	usart_send_string((uint8_t*)str_mount);
+	serial_send_string((uint8_t*)str_mount);
 #else
 	printf ("PSR = %x\n", stacked_psr);
 #endif
 #ifndef USE_PRINTF
-	usart_send_string((uint8_t*)"\r\nBFAR = 0x");
+	serial_send_string((uint8_t*)"\r\nBFAR = 0x");
 	conv_uint32_to_8a_hex((*((volatile unsigned long *)(0xE000ED38))), void_ptr);
-	usart_send_string((uint8_t*)str_mount);
+	serial_send_string((uint8_t*)str_mount);
 #else
 	printf ("BFAR = %x\n", (*((volatile unsigned long *)(0xE000ED38))));
 #endif
 #ifndef USE_PRINTF
-	usart_send_string((uint8_t*)"\r\nCFSR = 0x");
+	serial_send_string((uint8_t*)"\r\nCFSR = 0x");
 	conv_uint32_to_8a_hex((*((volatile unsigned long *)(0xE000ED28))), void_ptr);
-	usart_send_string((uint8_t*)str_mount);
+	serial_send_string((uint8_t*)str_mount);
 #else
 	printf ("CFSR = %x\n", (*((volatile unsigned long *)(0xE000ED28))));
 #endif
 #ifndef USE_PRINTF
-	usart_send_string((uint8_t*)"\r\nHFSR = 0x");
+	serial_send_string((uint8_t*)"\r\nHFSR = 0x");
 	conv_uint32_to_8a_hex((*((volatile unsigned long *)(0xE000ED38))), void_ptr);
-	usart_send_string((uint8_t*)str_mount);
+	serial_send_string((uint8_t*)str_mount);
 #else
 	printf ("HFSR = %x\n", (*((volatile unsigned long *)(0xE000ED2C))));
 #endif
 #ifndef USE_PRINTF
-	usart_send_string((uint8_t*)"\r\nDFSR = 0x");
+	serial_send_string((uint8_t*)"\r\nDFSR = 0x");
 	conv_uint32_to_8a_hex((*((volatile unsigned long *)(0xE000ED3C))), void_ptr);
-	usart_send_string((uint8_t*)str_mount);
+	serial_send_string((uint8_t*)str_mount);
 #else
 	printf ("DFSR = %x\n", (*((volatile unsigned long *)(0xE000ED30))));
 #endif
 #ifndef USE_PRINTF
-	usart_send_string((uint8_t*)"\r\nAFSR = 0x");
+	serial_send_string((uint8_t*)"\r\nAFSR = 0x");
 	conv_uint32_to_8a_hex((*((volatile unsigned long *)(0xE000ED38))), void_ptr);
-	usart_send_string((uint8_t*)str_mount);
+	serial_send_string((uint8_t*)str_mount);
 #else
 	printf ("AFSR = %x\n", (*((volatile unsigned long *)(0xE000ED3C))));
 #endif
 #ifndef USE_PRINTF
-	usart_send_string((uint8_t*)"\r\nSCB_SHCSR = 0x");
+	serial_send_string((uint8_t*)"\r\nSCB_SHCSR = 0x");
 	conv_uint32_to_8a_hex((uint32_t)SCB_SHCSR, void_ptr);
-	usart_send_string((uint8_t*)str_mount);
-	usart_send_string((uint8_t*)"\r\n");
+	serial_send_string((uint8_t*)str_mount);
+	serial_send_string((uint8_t*)"\r\n");
 #else
 	printf ("SCB_SHCSR = %x\n", SCB_SHCSR);
 #endif
   
 	for(;;);	//Stay here: Infinite loop
-}	//void common_code_fault_handler (unsigned int * hardfault_args)
+}

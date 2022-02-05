@@ -18,9 +18,9 @@
 ##
 
 BINARY = ps2-msxF4
-OBJS = msxmap.o ps2handl.o dbasemgt.o sys_timer.o serial.o hr_timer.o SpecialFaultHandlers.o
+OBJS = msxmap.o ps2handl.o dbasemgt.o sys_timer.o serial.o hr_timer.o SpecialFaultHandlers.o cdcacm.o
 
-LDSCRIPT = stm32f401x6.ld
+LDSCRIPT = stm32f401xc.ld
 
 include Makefile.include
 
