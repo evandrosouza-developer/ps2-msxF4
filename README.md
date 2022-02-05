@@ -1,6 +1,6 @@
 # STM32: PS/2 to USB Converter
 
-This design uses MiniSTM32F4x1 board to convert between PS/2 and MSX computer. It is meant to connect a keyboard, which only provides a PS/2 connection, to a MSX (or any one that have a up to 15 active columns and reads zeroes througth 8 bits - up to 15 x 8 matrix) retro computer.
+This fully functional design uses MiniSTM32F4xC board to convert between PS/2 and MSX computer. It is meant to connect a keyboard, which only provides a PS/2 connection, to a MSX (or any one that have a up to 15 active columns and reads zeroes througth 8 bits - up to 15 x 8 matrix) retro computer.
 This code powers and has been tested on the following Windows keyboards, with brazilian 275 layout:
 - Compaq RT235BTWBR;
 - Clone KE11090749;
@@ -34,7 +34,7 @@ make
 
 ## Hardware and Setup
 
-You will obviously need a STM32F401CCU6 or the newer one STM32F401CEU6 chip. I have used a chinese blue pill. The software was made considering 25.000Mhz oscillator crystal, to clock the STM32 microcontroller chip at 84MHz. The connections are:
+You will obviously need a STM32F401CCU6 or the newer one STM32F401CEU6 chip. I have designed a PCB considering the WeAct V3.0 black pill. The software was made considering 25.000Mhz oscillator crystal, to clock the STM32 microcontroller chip at 84MHz. The connections are:
 
 1) PS/2 Keyboard (J3- PS/2 Port) :
 - PS/2 power - Pin 1 - Connect to PS/2 mini-din 45322 pin 4;
@@ -97,7 +97,7 @@ STM32F4x1 MiniF4 already comes with DFU (Device Firmware Upgrade) available in t
 `sudo apt install dfu-util`
 2) Make the .bin file, as dfu-util is not compatible with .elf: 
 `arm-none-eabi-objcopy -Obinary ps2-msxF4.elf ps2-msxF4.bin`
-3) Make sure the chip is at least 25°C (you may let it working for a while);
+3) Make sure the chip is at least 25°C (you may let it working for a while and help with your funger), because it uses internal oscillator, factory trimmed to 25°C;
 4) Plug the USB cable to your computer and the STM32F4 board while holding both NRST and BOOT0;
 5) Then release BOOT0 AFTER 0.5 second you released NRST;
 6) Run the command to flash the code itself:
