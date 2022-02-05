@@ -1,5 +1,5 @@
-ps2-msxF4_keyboard.files
-ps2-msx.cpp
+ps2-msxF4.files
+ps2-msxF4.cpp
 port-def.h
 msxmap.cpp
 msxmap.h
@@ -14,6 +14,8 @@ sys_timer.cpp
 sys_timer.h
 serial.c
 serial.h
+cdcacm.c
+cdcacm.h
 SpecialFaultHandlers.c
 SpecialFaultHandlers.h
 Makefile
